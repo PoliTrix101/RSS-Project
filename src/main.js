@@ -10,20 +10,31 @@ const router = createRouter({
 
   routes: [
     {
+      // Login and Register share one layout, so the branding panel stays in
+      // place while the form slides between the two pages.
       path: '/',
-      redirect: '/login'
-    },
-    {
-      path: '/login',
-      component: () => import('./views/auth/LoginView.vue')
-    },
-    {
-      path: '/register',
-      component: () => import('./views/auth/RegisterView.vue')
-    },
-    {
-      path: '/forgot-password',
-      component: () => import('./views/auth/ForgotPasswordView.vue')
+      component: () => import('./components/AuthLayout.vue'),
+      children: [
+        {
+          path: '',
+          redirect: '/login'
+        },
+        {
+          path: 'login',
+          component: () => import('./views/auth/LoginView.vue'),
+          meta: { authView: 'login' }
+        },
+        {
+          path: 'register',
+          component: () => import('./views/auth/RegisterView.vue'),
+          meta: { authView: 'register' }
+        },
+        {
+          path: 'forgot-password',
+          component: () => import('./views/auth/ForgotPasswordView.vue'),
+          meta: { authView: 'forgot' }
+        }
+      ]
     },
     {
       path: '/student/dashboard',
