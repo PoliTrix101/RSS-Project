@@ -5,7 +5,7 @@
     <!-- LEFT BRANDING PANEL -->
     <aside class="brand-panel">
       <div class="brand-content">
-        <div class="brand-logo">RSS</div>
+        <div class="brand-logo"><AppIcon name="graduation-cap" :size="26" /></div>
 
         <div class="brand-title">
           <span>STUDENT SERVICE PORTAL</span>
@@ -18,7 +18,7 @@
 
         <div class="brand-features">
           <div class="feature">
-            <span class="feature-icon">✓</span>
+            <span class="feature-icon"><AppIcon name="clock" :size="17" /></span>
             <div>
               <strong>Track your service hours</strong>
               <small>Monitor your progress toward 340 hours.</small>
@@ -26,7 +26,7 @@
           </div>
 
           <div class="feature">
-            <span class="feature-icon">▤</span>
+            <span class="feature-icon"><AppIcon name="file-text" :size="17" /></span>
             <div>
               <strong>Manage your records</strong>
               <small>Keep your service documents organized.</small>
@@ -34,7 +34,7 @@
           </div>
 
           <div class="feature">
-            <span class="feature-icon">◷</span>
+            <span class="feature-icon"><AppIcon name="bell" :size="17" /></span>
             <div>
               <strong>Stay informed</strong>
               <small>Receive important program announcements.</small>
@@ -53,7 +53,7 @@
       <div class="register-container">
 
         <div class="mobile-logo">
-          <div class="brand-logo">RSS</div>
+          <div class="brand-logo"><AppIcon name="graduation-cap" :size="26" /></div>
           <span>RETURN OF SERVICE SYSTEM</span>
         </div>
 
@@ -261,7 +261,7 @@
             :disabled="isSubmitting"
           >
             {{ isSubmitting ? 'Creating Account...' : 'Create Account' }}
-            <span>→</span>
+            <AppIcon v-if="!isSubmitting" name="arrow-right" :size="18" />
           </button>
 
         </form>
@@ -283,6 +283,7 @@
 
 <script setup>
 import { reactive, ref } from 'vue'
+import AppIcon from '@/components/AppIcon.vue'
 
 const API_URL = (
   import.meta.env.VITE_API_URL || 'http://localhost:4000/api'
@@ -417,13 +418,10 @@ async function register() {
   width: 55px;
   height: 55px;
   border-radius: 14px;
-  background: #3479e8;
+  background: linear-gradient(135deg, #3b82f6, #1d4ed8);
   display: grid;
   place-items: center;
   color: white;
-  font-size: 17px;
-  font-weight: 800;
-  letter-spacing: 1px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
 }
 

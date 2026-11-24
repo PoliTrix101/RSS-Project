@@ -1,9 +1,10 @@
 
 const db = require('./db')
 
+// Every id is a UUID string created by the app with crypto.randomUUID().
 const tables = [
   `CREATE TABLE IF NOT EXISTS sections (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT PRIMARY KEY NOT NULL,
     section_name TEXT NOT NULL,
     course TEXT NOT NULL,
     year_level TEXT NOT NULL,
@@ -12,7 +13,7 @@ const tables = [
   )`,
 
   `CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT PRIMARY KEY NOT NULL,
     student_id TEXT UNIQUE,
     first_name TEXT NOT NULL,
     middle_name TEXT,
@@ -23,25 +24,25 @@ const tables = [
       CHECK(role IN ('student', 'admin')),
     course TEXT,
     year_level TEXT,
-    section_id INTEGER,
+    section_id TEXT,
     contact_number TEXT,
     account_status TEXT NOT NULL DEFAULT 'pending'
-      CHECK(account_status IN ('pending', 'active', 'rejected', 'disabled')),
+      CHECK(account_status IN ('pending', 'approved', 'rejected', 'disabled')),
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(section_id) REFERENCES sections(id)
   )`,
 
   `CREATE TABLE IF NOT EXISTS attendance (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    student_id INTEGER NOT NULL,
+    id TEXT PRIMARY KEY NOT NULL,
+    student_id TEXT NOT NULL,
     attendance_date TEXT NOT NULL,
     time_in TEXT NOT NULL,
     time_out TEXT,
     total_hours REAL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'pending'
       CHECK(status IN ('pending', 'approved', 'rejected')),
-    verified_by INTEGER,
+    verified_by TEXT,
     admin_remarks TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -50,20 +51,20 @@ const tables = [
   )`,
 
   `CREATE TABLE IF NOT EXISTS hour_adjustments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    student_id INTEGER NOT NULL,
+    id TEXT PRIMARY KEY NOT NULL,
+    student_id TEXT NOT NULL,
     adjustment_amount REAL NOT NULL,
     adjustment_type TEXT NOT NULL
       CHECK(adjustment_type IN ('add', 'deduct')),
     reason TEXT NOT NULL,
-    adjusted_by INTEGER NOT NULL,
+    adjusted_by TEXT NOT NULL,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(student_id) REFERENCES users(id),
     FOREIGN KEY(adjusted_by) REFERENCES users(id)
   )`,
 
   `CREATE TABLE IF NOT EXISTS service_areas (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT PRIMARY KEY NOT NULL,
     area_name TEXT NOT NULL UNIQUE,
     description TEXT,
     location TEXT,
@@ -72,9 +73,9 @@ const tables = [
   )`,
 
   `CREATE TABLE IF NOT EXISTS service_assignments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    student_id INTEGER NOT NULL,
-    area_id INTEGER NOT NULL,
+    id TEXT PRIMARY KEY NOT NULL,
+    student_id TEXT NOT NULL,
+    area_id TEXT NOT NULL,
     assigned_date TEXT NOT NULL,
     schedule_start TEXT,
     schedule_end TEXT,
@@ -84,9 +85,9 @@ const tables = [
   )`,
 
   `CREATE TABLE IF NOT EXISTS service_records (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    student_id INTEGER NOT NULL,
-    area_id INTEGER,
+    id TEXT PRIMARY KEY NOT NULL,
+    student_id TEXT NOT NULL,
+    area_id TEXT,
     activity_description TEXT,
     service_date TEXT NOT NULL,
     start_time TEXT,
@@ -94,7 +95,7 @@ const tables = [
     total_hours REAL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'pending'
       CHECK(status IN ('pending', 'approved', 'rejected')),
-    verified_by INTEGER,
+    verified_by TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(student_id) REFERENCES users(id),
     FOREIGN KEY(area_id) REFERENCES service_areas(id),
@@ -102,8 +103,8 @@ const tables = [
   )`,
 
   `CREATE TABLE IF NOT EXISTS documents (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    student_id INTEGER NOT NULL,
+    id TEXT PRIMARY KEY NOT NULL,
+    student_id TEXT NOT NULL,
     document_name TEXT NOT NULL,
     document_type TEXT,
     description TEXT,
@@ -113,12 +114,14 @@ const tables = [
     admin_remarks TEXT,
     submitted_at TEXT DEFAULT CURRENT_TIMESTAMP,
     reviewed_at TEXT,
-    FOREIGN KEY(student_id) REFERENCES users(id)
+    reviewed_by TEXT,
+    FOREIGN KEY(student_id) REFERENCES users(id),
+    FOREIGN KEY(reviewed_by) REFERENCES users(id)
   )`,
 
   `CREATE TABLE IF NOT EXISTS notifications (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
+    id TEXT PRIMARY KEY NOT NULL,
+    user_id TEXT NOT NULL,
     title TEXT NOT NULL,
     message TEXT NOT NULL,
     is_read INTEGER NOT NULL DEFAULT 0,
@@ -127,11 +130,11 @@ const tables = [
   )`,
 
   `CREATE TABLE IF NOT EXISTS announcements (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    admin_id INTEGER NOT NULL,
+    id TEXT PRIMARY KEY NOT NULL,
+    admin_id TEXT NOT NULL,
     title TEXT NOT NULL,
     content TEXT NOT NULL,
-    target_section_id INTEGER,
+    target_section_id TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(admin_id) REFERENCES users(id),
@@ -139,9 +142,9 @@ const tables = [
   )`,
 
   `CREATE TABLE IF NOT EXISTS activity_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    admin_id INTEGER NOT NULL,
-    student_id INTEGER,
+    id TEXT PRIMARY KEY NOT NULL,
+    admin_id TEXT NOT NULL,
+    student_id TEXT,
     action TEXT NOT NULL,
     reason TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,

@@ -1,13 +1,23 @@
 const express = require('express')
+const bcrypt = require('bcryptjs')
 const jwt = require('jsonwebtoken')
-const { randomUUID } = require('crypto')
+const { randomInt, randomUUID } = require('crypto')
 const fs = require('fs')
 const db = require('../db')
 const { resolveDocumentPath, getDocumentMimeType } = require('../document-storage')
+const { nowInAppZone } = require('../app-time')
+const { PHOTO_KINDS, sendAttendancePhoto } = require('../attendance-photos')
+const { sendProfilePhoto } = require('../profile-photos')
 
 const router = express.Router()
 const requiredHours = 340
 const accountStatuses = new Set(['pending', 'approved', 'rejected', 'disabled'])
+
+// Select column with the path the admin pages load a student's profile picture from, or
+// NULL when there is none. `v` changes with every upload, so browsers may cache each URL.
+function profilePhotoUrlColumn(alias) {
+  return `CASE WHEN ${alias}.profile_photo_path IS NULL THEN NULL ELSE '/admin/students/' || ${alias}.id || '/photo?v=' || substr(${alias}.profile_photo_path, 1, 8) END AS profile_photo_url`
+}
 
 async function authenticateAdmin(req, res, next) {
   const authorization = req.get('authorization')
@@ -112,8 +122,19 @@ function validateRecordId(value, res, label = 'Record') {
   return value.trim()
 }
 
+// Activity times are local wall-clock values from a datetime-local input
+// (YYYY-MM-DDTHH:MM). The student routes compare them with the local time in SQL,
+// so a time zone suffix or any other format would be compared incorrectly.
 function isValidSchedule(value) {
-  return typeof value === 'string' && value.length <= 40 && Number.isFinite(Date.parse(value))
+  const match = typeof value === 'string' &&
+    value.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/)
+  if (!match) return false
+
+  const [year, month, day, hour, minute, second] = match.slice(1).map(part => Number(part || 0))
+  const date = new Date(Date.UTC(year, month - 1, day, hour, minute, second))
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day && date.getUTCHours() === hour &&
+    date.getUTCMinutes() === minute && date.getUTCSeconds() === second
 }
 
 function isValidCalendarDate(value) {
@@ -165,7 +186,10 @@ async function getHourProgress(studentId, executor = db) {
     requiredHours,
     completedHours,
     remainingHours,
-    completionPercentage: Number(((completedHours / requiredHours) * 100).toFixed(2))
+    completionPercentage: Math.min(
+      100,
+      Number(((completedHours / requiredHours) * 100).toFixed(2))
+    )
   }
 }
 
@@ -334,6 +358,7 @@ router.get('/dashboard-stats', async (req, res) => {
           u.id,
           u.student_id,
           TRIM(u.first_name || ' ' || COALESCE(u.middle_name || ' ', '') || u.last_name) AS full_name,
+          ${profilePhotoUrlColumn('u')},
           u.course,
           u.year_level,
           u.account_status,
@@ -350,6 +375,7 @@ router.get('/dashboard-stats', async (req, res) => {
           a.id,
           u.student_id,
           TRIM(u.first_name || ' ' || COALESCE(u.middle_name || ' ', '') || u.last_name) AS student_name,
+          ${profilePhotoUrlColumn('u')},
           a.attendance_date,
           a.time_in,
           a.time_out,
@@ -512,6 +538,7 @@ router.get('/students', async (req, res) => {
             u.middle_name,
             u.last_name,
             TRIM(u.first_name || ' ' || COALESCE(u.middle_name || ' ', '') || u.last_name) AS full_name,
+            ${profilePhotoUrlColumn('u')},
             u.email,
             u.course,
             u.year_level,
@@ -564,6 +591,7 @@ router.get('/students/:id', async (req, res) => {
           u.middle_name,
           u.last_name,
           TRIM(u.first_name || ' ' || COALESCE(u.middle_name || ' ', '') || u.last_name) AS full_name,
+          ${profilePhotoUrlColumn('u')},
           u.email,
           u.contact_number,
           u.course,
@@ -632,6 +660,28 @@ router.get('/students/:id', async (req, res) => {
   }
 })
 
+// The student's profile picture: 200 with the image, or 204 when they have none.
+router.get('/students/:id/photo', async (req, res) => {
+  const studentId = validateStudentId(req.params.id, res)
+  if (!studentId) return
+
+  try {
+    const result = await db.execute({
+      sql: "SELECT profile_photo_path FROM users WHERE id = ? AND role = 'student'",
+      args: [studentId]
+    })
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Student account was not found.' })
+    }
+    const fileName = result.rows[0].profile_photo_path
+    if (!fileName) return res.status(204).end()
+    return await sendProfilePhoto(res, fileName, { maxAgeSeconds: 24 * 60 * 60 })
+  } catch (error) {
+    console.error('Admin student photo error:', error)
+    return res.status(500).json({ success: false, message: 'Failed to load the profile picture.' })
+  }
+})
+
 router.patch('/students/:id/approve', (req, res) => {
   return changeStudentStatus(req, res, 'approved', 'pending', 'student_approved')
 })
@@ -646,6 +696,90 @@ router.patch('/students/:id/disable', (req, res) => {
 
 router.patch('/students/:id/enable', (req, res) => {
   return changeStudentStatus(req, res, 'approved', 'disabled', 'student_enabled')
+})
+
+// No look-alike characters (0/O, 1/l/I), so the password is easy to read out and type.
+const temporaryPasswordAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789'
+
+function createTemporaryPassword(length = 12) {
+  let password = ''
+  for (let index = 0; index < length; index++) {
+    password += temporaryPasswordAlphabet[randomInt(temporaryPasswordAlphabet.length)]
+  }
+  return password
+}
+
+router.patch('/students/:id/reset-password', async (req, res) => {
+  const studentId = validateStudentId(req.params.id, res)
+  if (!studentId) return
+
+  let transaction
+  try {
+    const temporaryPassword = createTemporaryPassword()
+    // Hash before taking the write lock: bcrypt is deliberately slow.
+    const passwordHash = await bcrypt.hash(temporaryPassword, 12)
+
+    transaction = await db.transaction('write')
+    const update = await transaction.execute({
+      sql: `
+        UPDATE users
+        SET password_hash = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND role = 'student'
+      `,
+      args: [passwordHash, studentId]
+    })
+    if (Number(update.rowsAffected) === 0) {
+      await transaction.rollback()
+      transaction = null
+      return res.status(404).json({
+        success: false,
+        message: 'Student account was not found.'
+      })
+    }
+
+    await transaction.execute({
+      sql: `
+        INSERT INTO activity_logs (id, admin_id, student_id, action, reason)
+        VALUES (?, ?, ?, 'student_password_reset', NULL)
+      `,
+      args: [randomUUID(), req.admin.id, studentId]
+    })
+    await transaction.execute({
+      sql: `
+        INSERT INTO notifications (id, user_id, title, message)
+        VALUES (?, ?, ?, ?)
+      `,
+      args: [
+        randomUUID(),
+        studentId,
+        'Password reset',
+        'An administrator reset your password. Sign in with the temporary password they gave you, then choose a new one under Settings.'
+      ]
+    })
+    await transaction.commit()
+    transaction = null
+
+    // The admin sees the temporary password only in this response, so it must never be cached.
+    res.set('Cache-Control', 'no-store')
+    return res.json({
+      success: true,
+      message: 'Password reset. Give the temporary password to the student.',
+      temporaryPassword
+    })
+  } catch (error) {
+    if (transaction) {
+      try {
+        await transaction.rollback()
+      } catch (rollbackError) {
+        console.error('Failed to roll back password reset:', rollbackError)
+      }
+    }
+    console.error('Student password reset error:', error)
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to reset the student password.'
+    })
+  }
 })
 
 router.get('/attendance', async (req, res) => {
@@ -673,6 +807,7 @@ router.get('/attendance', async (req, res) => {
           a.student_id,
           u.student_id AS student_number,
           TRIM(u.first_name || ' ' || COALESCE(u.middle_name || ' ', '') || u.last_name) AS student_name,
+          ${profilePhotoUrlColumn('u')},
           a.attendance_date,
           a.time_in,
           a.time_out,
@@ -681,7 +816,9 @@ router.get('/attendance', async (req, res) => {
           s.title AS activity_title,
           a.status,
           a.admin_remarks,
-          a.created_at
+          a.created_at,
+          CASE WHEN a.before_photo_path IS NULL THEN 0 ELSE 1 END AS has_before_photo,
+          CASE WHEN a.after_photo_path IS NULL THEN 0 ELSE 1 END AS has_after_photo
         FROM attendance a
         JOIN users u ON u.id = a.student_id
         LEFT JOIN service_activities s ON s.id = a.activity_id
@@ -793,7 +930,10 @@ async function reviewAttendance(req, res, nextStatus) {
       }
     }
     console.error('Attendance review error:', error)
-    return next(error)
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to review attendance.'
+    })
   }
 }
 
@@ -803,6 +943,28 @@ router.patch('/attendance/:id/approve', (req, res, next) => {
 
 router.patch('/attendance/:id/reject', (req, res, next) => {
   return reviewAttendance(req, res, 'rejected').catch(next)
+})
+
+router.get('/attendance/:id/photos/:kind', async (req, res) => {
+  const attendanceId = validateRecordId(req.params.id, res, 'Attendance')
+  if (!attendanceId) return
+  if (!PHOTO_KINDS.includes(req.params.kind)) {
+    return res.status(404).json({ success: false, message: 'Photo was not found.' })
+  }
+
+  try {
+    const result = await db.execute({
+      sql: 'SELECT before_photo_path, after_photo_path FROM attendance WHERE id = ?',
+      args: [attendanceId]
+    })
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Attendance record was not found.' })
+    }
+    return await sendAttendancePhoto(res, result.rows[0], req.params.kind)
+  } catch (error) {
+    console.error('Admin attendance photo error:', error)
+    return res.status(500).json({ success: false, message: 'Failed to load the photo.' })
+  }
 })
 
 router.get('/activity-areas', async (req, res) => {
@@ -819,6 +981,171 @@ router.get('/activity-areas', async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Failed to load service areas.'
+    })
+  }
+})
+
+router.get('/service-areas', async (req, res) => {
+  try {
+    const result = await db.execute(`
+      SELECT id, area_name, description, location, status, created_at
+      FROM service_areas
+      ORDER BY CASE WHEN status = 'active' THEN 0 ELSE 1 END, area_name
+    `)
+    return res.json({ success: true, areas: result.rows })
+  } catch (error) {
+    console.error('Admin service area management list error:', error)
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to load service areas.'
+    })
+  }
+})
+
+function readServiceArea(body, current = {}) {
+  const pick = field => (body[field] === undefined ? current[field] : body[field])
+  const areaName = pick('area_name')
+  const description = pick('description')
+  const location = pick('location')
+  const status = pick('status') || 'active'
+
+  if (typeof areaName !== 'string' || !areaName.trim() || areaName.trim().length > 100) {
+    return { error: 'Service area name is required and must be no longer than 100 characters.' }
+  }
+  if (description != null && (typeof description !== 'string' || description.trim().length > 500)) {
+    return { error: 'Service area description must be text no longer than 500 characters.' }
+  }
+  if (location != null && (typeof location !== 'string' || location.trim().length > 250)) {
+    return { error: 'Service area location must be text no longer than 250 characters.' }
+  }
+  if (!['active', 'inactive'].includes(status)) {
+    return { error: 'Service area status must be active or inactive.' }
+  }
+
+  return {
+    area: {
+      area_name: areaName.trim(),
+      description: description ? description.trim() || null : null,
+      location: location ? location.trim() || null : null,
+      status
+    }
+  }
+}
+
+router.post('/service-areas', async (req, res) => {
+  const { area, error: validationError } = readServiceArea(req.body || {})
+  if (validationError) {
+    return res.status(400).json({
+      success: false,
+      message: validationError
+    })
+  }
+
+  try {
+    const duplicate = await db.execute({
+      sql: 'SELECT id FROM service_areas WHERE lower(area_name) = lower(?)',
+      args: [area.area_name]
+    })
+    if (duplicate.rows.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: 'A service area with this name already exists.'
+      })
+    }
+
+    const id = randomUUID()
+    await db.execute({
+      sql: `
+        INSERT INTO service_areas (id, area_name, description, location, status)
+        VALUES (?, ?, ?, ?, ?)
+      `,
+      args: [id, area.area_name, area.description, area.location, area.status]
+    })
+    await db.execute({
+      sql: `
+        INSERT INTO activity_logs (id, admin_id, action, reason)
+        VALUES (?, ?, 'service_area_created', ?)
+      `,
+      args: [randomUUID(), req.admin.id, area.area_name]
+    })
+    return res.status(201).json({
+      success: true,
+      message: 'Service area added.',
+      id
+    })
+  } catch (error) {
+    console.error('Admin create service area error:', error)
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to add service area.'
+    })
+  }
+})
+
+router.patch('/service-areas/:id', async (req, res) => {
+  const areaId = validateRecordId(req.params.id, res, 'Service area')
+  if (!areaId) return
+  const body = req.body || {}
+  const fields = Object.keys(body)
+  if (fields.length === 0 || fields.some(field => !['area_name', 'description', 'location', 'status'].includes(field))) {
+    return res.status(400).json({
+      success: false,
+      message: 'Service area update fields are invalid.'
+    })
+  }
+
+  try {
+    const currentResult = await db.execute({
+      sql: 'SELECT area_name, description, location, status FROM service_areas WHERE id = ?',
+      args: [areaId]
+    })
+    if (currentResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Service area was not found.'
+      })
+    }
+
+    const { area, error: validationError } = readServiceArea(body, currentResult.rows[0])
+    if (validationError) {
+      return res.status(400).json({
+        success: false,
+        message: validationError
+      })
+    }
+
+    const duplicate = await db.execute({
+      sql: 'SELECT id FROM service_areas WHERE lower(area_name) = lower(?) AND id <> ?',
+      args: [area.area_name, areaId]
+    })
+    if (duplicate.rows.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: 'A service area with this name already exists.'
+      })
+    }
+
+    await db.execute({
+      sql: `
+        UPDATE service_areas
+        SET area_name = ?, description = ?, location = ?, status = ?
+        WHERE id = ?
+      `,
+      args: [area.area_name, area.description, area.location, area.status, areaId]
+    })
+    await db.execute({
+      sql: `
+        INSERT INTO activity_logs (id, admin_id, action, reason)
+        VALUES (?, ?, 'service_area_updated', ?)
+      `,
+      args: [randomUUID(), req.admin.id, area.area_name]
+    })
+    return res.json({ success: true, message: 'Service area updated.' })
+  } catch (error) {
+    console.error('Admin update service area error:', error)
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to update service area.'
     })
   }
 })
@@ -840,16 +1167,28 @@ router.get('/activities', async (req, res) => {
         a.registration_open,
         a.status,
         a.created_at,
+        a.archived_at,
+        a.ended_notified_at,
         s.area_name AS service_area,
-        COALESCE(r.registration_count, 0) AS registration_count
+        COALESCE(r.registration_count, 0) AS registration_count,
+        COALESCE(r.approved_count, 0) AS approved_count,
+        COALESCE(h.approved_hours, 0) AS approved_hours
       FROM service_activities a
       JOIN service_areas s ON s.id = a.area_id
       LEFT JOIN (
-        SELECT activity_id, COUNT(*) AS registration_count
+        SELECT
+          activity_id,
+          SUM(CASE WHEN status IN ('pending', 'approved') THEN 1 ELSE 0 END) AS registration_count,
+          SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) AS approved_count
         FROM activity_registrations
-        WHERE status IN ('pending', 'approved')
         GROUP BY activity_id
       ) r ON r.activity_id = a.id
+      LEFT JOIN (
+        SELECT activity_id, SUM(total_hours) AS approved_hours
+        FROM attendance
+        WHERE status = 'approved' AND activity_id IS NOT NULL
+        GROUP BY activity_id
+      ) h ON h.activity_id = a.id
       ORDER BY a.scheduled_start DESC
     `)
     return res.json({ success: true, activities: result.rows })
@@ -883,7 +1222,7 @@ router.post('/activities', async (req, res) => {
       Date.parse(body.scheduled_start) >= Date.parse(body.scheduled_end)) {
     return res.status(400).json({
       success: false,
-      message: 'Activity schedule must contain valid start and end dates, with the end after the start.'
+      message: 'Activity start and end must use the YYYY-MM-DDTHH:MM format, with the end after the start.'
     })
   }
 
@@ -1037,7 +1376,7 @@ router.patch('/activities/:id', async (req, res) => {
         Date.parse(value.scheduled_start) >= Date.parse(value.scheduled_end)) {
       return res.status(400).json({
         success: false,
-        message: 'Activity schedule is invalid.'
+        message: 'Activity start and end must use the YYYY-MM-DDTHH:MM format, with the end after the start.'
       })
     }
     value.required_hours = Number(value.required_hours)
@@ -1182,6 +1521,142 @@ router.delete('/activities/:id', async (req, res) => {
   }
 })
 
+// Archiving hides a finished activity from the admin's active list and the student
+// browse list. Registrations and attendance stay, so the participant record survives.
+async function setActivityArchived(req, res, archive) {
+  const activityId = validateRecordId(req.params.id, res, 'Activity')
+  if (!activityId) return
+
+  try {
+    const result = await db.execute({
+      sql: `
+        SELECT
+          title,
+          archived_at,
+          CASE
+            WHEN status = 'cancelled' OR datetime(scheduled_end) <= datetime(?) THEN 1
+            ELSE 0
+          END AS is_finished
+        FROM service_activities
+        WHERE id = ?
+      `,
+      args: [nowInAppZone(), activityId]
+    })
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Service activity was not found.'
+      })
+    }
+
+    const activity = result.rows[0]
+    if (archive && !Number(activity.is_finished)) {
+      return res.status(409).json({
+        success: false,
+        message: 'Only activities that have ended or were cancelled can be archived.'
+      })
+    }
+    if (Boolean(activity.archived_at) === archive) {
+      return res.status(409).json({
+        success: false,
+        message: archive ? 'This activity is already archived.' : 'This activity is not archived.'
+      })
+    }
+
+    await db.execute({
+      sql: `
+        UPDATE service_activities
+        SET archived_at = ${archive ? 'CURRENT_TIMESTAMP' : 'NULL'}, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `,
+      args: [activityId]
+    })
+    await db.execute({
+      sql: `
+        INSERT INTO activity_logs (id, admin_id, action, reason)
+        VALUES (?, ?, ?, ?)
+      `,
+      args: [randomUUID(), req.admin.id, archive ? 'activity_archived' : 'activity_restored', activity.title]
+    })
+    return res.json({
+      success: true,
+      message: archive ? 'Activity moved to completed activities.' : 'Activity restored to the active list.'
+    })
+  } catch (error) {
+    console.error('Admin archive activity error:', error)
+    return res.status(500).json({
+      success: false,
+      message: archive ? 'Failed to archive service activity.' : 'Failed to restore service activity.'
+    })
+  }
+}
+
+router.patch('/activities/:id/archive', (req, res, next) => {
+  return setActivityArchived(req, res, true).catch(next)
+})
+
+router.patch('/activities/:id/restore', (req, res, next) => {
+  return setActivityArchived(req, res, false).catch(next)
+})
+
+router.get('/activities/:id/participants', async (req, res) => {
+  const activityId = validateRecordId(req.params.id, res, 'Activity')
+  if (!activityId) return
+
+  try {
+    const activity = await db.execute({
+      sql: 'SELECT id FROM service_activities WHERE id = ?',
+      args: [activityId]
+    })
+    if (activity.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Service activity was not found.'
+      })
+    }
+
+    // Everyone who registered, plus anyone who logged attendance against the
+    // activity without a registration row.
+    const result = await db.execute({
+      sql: `
+        SELECT
+          u.id AS student_id,
+          u.student_id AS student_number,
+          TRIM(u.first_name || ' ' || COALESCE(u.middle_name || ' ', '') || u.last_name) AS student_name,
+          ${profilePhotoUrlColumn('u')},
+          r.status AS registration_status,
+          r.registered_at,
+          COALESCE(h.approved_hours, 0) AS approved_hours,
+          COALESCE(h.pending_hours, 0) AS pending_hours
+        FROM users u
+        LEFT JOIN activity_registrations r
+          ON r.student_id = u.id AND r.activity_id = ?
+        LEFT JOIN (
+          SELECT
+            student_id,
+            SUM(CASE WHEN status = 'approved' THEN total_hours ELSE 0 END) AS approved_hours,
+            SUM(CASE WHEN status = 'pending' THEN total_hours ELSE 0 END) AS pending_hours
+          FROM attendance
+          WHERE activity_id = ?
+          GROUP BY student_id
+        ) h ON h.student_id = u.id
+        WHERE r.id IS NOT NULL OR h.student_id IS NOT NULL
+        ORDER BY
+          CASE r.status WHEN 'approved' THEN 0 WHEN 'pending' THEN 1 WHEN 'rejected' THEN 3 WHEN 'cancelled' THEN 4 ELSE 2 END,
+          student_name
+      `,
+      args: [activityId, activityId]
+    })
+    return res.json({ success: true, participants: result.rows })
+  } catch (error) {
+    console.error('Admin activity participants error:', error)
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to load activity participants.'
+    })
+  }
+})
+
 router.get('/activity-registrations', async (req, res) => {
   const status = getOptionalQueryString(req.query.status, 'Status', 20, res)
   if (status === undefined) return
@@ -1203,6 +1678,7 @@ router.get('/activity-registrations', async (req, res) => {
           r.student_id,
           u.student_id AS student_number,
           TRIM(u.first_name || ' ' || COALESCE(u.middle_name || ' ', '') || u.last_name) AS student_name,
+          ${profilePhotoUrlColumn('u')},
           r.activity_id,
           a.title AS activity_title,
           r.status,
@@ -1309,7 +1785,10 @@ async function reviewActivityRegistration(req, res, nextStatus) {
       }
     }
     console.error('Activity registration review error:', error)
-    return next(error)
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to review activity registration.'
+    })
   }
 }
 
@@ -1319,6 +1798,38 @@ router.patch('/activity-registrations/:id/approve', (req, res, next) => {
 
 router.patch('/activity-registrations/:id/reject', (req, res, next) => {
   return reviewActivityRegistration(req, res, 'rejected').catch(next)
+})
+
+// Every adjustment across all students, with the student's course, year level and
+// section so the admin history table can filter them.
+router.get('/hour-adjustments', async (req, res) => {
+  try {
+    const result = await db.execute(`
+      SELECT
+        a.id,
+        a.student_id,
+        a.adjustment_amount,
+        a.adjustment_type,
+        a.reason,
+        a.created_at,
+        u.student_id AS student_number,
+        TRIM(u.first_name || ' ' || COALESCE(u.middle_name || ' ', '') || u.last_name) AS student_name,
+        u.course,
+        u.year_level,
+        s.section_name AS section
+      FROM hour_adjustments a
+      JOIN users u ON u.id = a.student_id
+      LEFT JOIN sections s ON s.id = u.section_id
+      ORDER BY a.created_at DESC
+    `)
+    return res.json({ success: true, adjustments: result.rows })
+  } catch (error) {
+    console.error('Admin hour adjustments error:', error)
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to load hour adjustments.'
+    })
+  }
 })
 
 router.get('/students/:id/hour-adjustments', async (req, res) => {
@@ -2093,7 +2604,10 @@ async function reviewStudentDocument(req, res, nextStatus) {
       }
     }
     console.error('Document review error:', error)
-    return next(error)
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to review document.'
+    })
   }
 }
 

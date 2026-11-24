@@ -1,202 +1,1051 @@
 <template>
-  <div class="admin-layout">
-    <aside class="sidebar">
-      <div class="brand"><div class="brand-icon">R</div><div><h2>RSS ADMIN</h2><span>MANAGEMENT SYSTEM</span></div></div>
-      <div class="admin-profile"><div class="avatar">A</div><div><strong>Administrator</strong><small>System Admin</small></div></div>
-      <nav class="navigation" aria-label="Admin workflows">
-        <button class="nav-link" type="button" @click="router.push('/admin/dashboard')"><span>▦</span>Dashboard</button>
-        <button class="nav-link" type="button" @click="router.push('/admin/students')"><span>♙</span>Student Management</button>
-        <p class="nav-label">WORKFLOWS</p>
-        <button v-for="tab in tabs" :key="tab.id" class="nav-link" :class="{ active: activeTab === tab.id }" type="button" @click="selectTab(tab.id)">
-          <span>{{ tab.icon }}</span>{{ tab.label }}
-        </button>
-      </nav>
-      <button class="logout-button" type="button" @click="logout">↪ Sign Out</button>
-    </aside>
+  <AdminLayout :active="activeTab" :title="activeLabel" :subtitle="activeSubtitle">
+    <template #actions>
+      <button class="btn btn-ghost btn-icon" type="button" title="Refresh" aria-label="Refresh" :disabled="loading" @click="loadTab">
+        <AppIcon name="refresh" />
+      </button>
+      <button v-if="activeTab === 'activities'" class="btn btn-primary btn-sm" type="button" @click="openActivityForm()">
+        <AppIcon name="plus" :size="16" /> New activity
+      </button>
+      <button v-else-if="activeTab === 'areas'" class="btn btn-primary btn-sm" type="button" @click="openAreaForm()">
+        <AppIcon name="plus" :size="16" /> Add area
+      </button>
+      <button v-else-if="activeTab === 'announcements'" class="btn btn-primary btn-sm" type="button" @click="openAnnouncementForm()">
+        <AppIcon name="plus" :size="16" /> New announcement
+      </button>
+    </template>
 
-    <main class="main-content">
-      <header class="topbar">
-        <div><p class="eyebrow">ADMINISTRATION</p><h1>{{ activeLabel }}</h1><p>Review and manage records from the connected Turso database.</p></div>
-        <button class="secondary-button" type="button" :disabled="loading" @click="loadTab">↻ Refresh</button>
-      </header>
+    <div v-if="errorMessage" class="alert alert-error page-alert" role="alert">
+      <AppIcon name="alert-circle" />
+      <div class="alert-body">{{ errorMessage }}</div>
+      <button class="btn btn-sm btn-secondary" type="button" @click="loadTab">Try again</button>
+    </div>
 
-      <div v-if="errorMessage" class="notice error" role="alert">{{ errorMessage }}<button @click="errorMessage = ''">×</button></div>
-      <div v-if="successMessage" class="notice success" role="status">{{ successMessage }}<button @click="successMessage = ''">×</button></div>
-      <div v-if="loading" class="loading" role="status"><span class="spinner"></span>Loading records…</div>
+    <div v-if="loading" class="loading-state" role="status">
+      <span class="spinner"></span>
+      <span>Loading records…</span>
+    </div>
 
-      <template v-else>
-        <section v-if="activeTab === 'attendance'" class="page-content">
-          <div class="intro"><h2>Attendance review</h2><p>Only approved submissions add hours to student progress.</p></div>
-          <div class="filter-row">
-            <label><span>Status</span><select v-model="attendanceStatus" @change="loadAttendance"><option value="">All statuses</option><option value="pending">Pending</option><option value="approved">Approved</option><option value="rejected">Rejected</option></select></label>
+    <template v-else>
+      <!-- ATTENDANCE -->
+      <div v-if="activeTab === 'attendance'" class="page">
+        <section class="card">
+          <div class="card-body card-toolbar">
+            <StatusFilter v-model="attendanceStatus" :options="reviewStatusOptions" @update:model-value="runFilter(loadAttendance)" />
+            <span class="muted count">{{ attendance.length }} {{ attendance.length === 1 ? 'record' : 'records' }}</span>
           </div>
-          <div class="table-wrap">
-            <table><thead><tr><th>Student</th><th>Student ID</th><th>Date</th><th>Activity</th><th>Time</th><th>Hours</th><th>Status</th><th>Remarks</th><th>Review</th></tr></thead>
+          <div class="table-wrap card-divider">
+            <table class="table">
+              <thead><tr><th>Student</th><th>Service day</th><th>Activity</th><th>Hours</th><th>Photos</th><th>Status</th><th class="cell-actions">Review</th></tr></thead>
               <tbody>
                 <tr v-for="record in attendance" :key="record.id">
-                  <td>{{ record.student_name }}</td><td>{{ record.student_number || '—' }}</td><td>{{ dateLabel(record.attendance_date) }}</td>
-                  <td>{{ record.activity_title || 'General service' }}</td><td>{{ record.time_in }}–{{ record.time_out || '—' }}</td><td>{{ hours(record.total_hours) }}</td>
-                  <td><span class="badge" :class="`status-${record.status}`">{{ titleCase(record.status) }}</span></td><td>{{ record.admin_remarks || '—' }}</td>
-                  <td class="actions" v-if="record.status === 'pending'">
-                    <button class="small-button approve" @click="reviewAttendance(record, 'approve')">Approve</button>
-                    <button class="small-button reject" @click="reviewAttendance(record, 'reject')">Reject</button>
+                  <td>
+                    <div class="person">
+                      <StudentAvatar class="avatar-sm" :name="record.student_name" :photo-url="record.profile_photo_url" />
+                      <div><span class="cell-strong">{{ record.student_name }}</span><span class="cell-sub">{{ record.student_number || '—' }}</span></div>
+                    </div>
                   </td>
-                  <td v-else>—</td>
+                  <td class="nowrap">{{ dateLabel(record.attendance_date) }}<span class="cell-sub">{{ formatTimeRange(record.time_in, record.time_out, '—') }}</span></td>
+                  <td>{{ record.activity_title || 'General service' }}</td>
+                  <td class="cell-num cell-strong">{{ hours(record.total_hours) }}</td>
+                  <td class="nowrap">
+                    <div v-if="Number(record.has_before_photo) || Number(record.has_after_photo)" class="photo-pair">
+                      <template v-for="kind in ['before', 'after']" :key="kind">
+                        <AuthPhoto
+                          v-if="Number(record[`has_${kind}_photo`])"
+                          :src="`${API_URL}/admin/attendance/${encodeURIComponent(record.id)}/photos/${kind}`"
+                          :token="token"
+                          :label="`${titleCase(kind)} photo`"
+                          :caption="titleCase(kind)"
+                          :subtitle="`${record.student_name} · ${record.activity_title || 'General service'} · ${dateLabel(record.attendance_date)}`"
+                        />
+                      </template>
+                    </div>
+                    <span v-else class="muted">No photos</span>
+                  </td>
+                  <td class="cell-wrap">
+                    <span :class="badgeClass(record.status)">{{ titleCase(record.status) }}</span>
+                    <span v-if="record.admin_remarks" class="cell-sub remark">{{ record.admin_remarks }}</span>
+                  </td>
+                  <td class="cell-actions">
+                    <div v-if="record.status === 'pending'" class="button-row">
+                      <button class="btn btn-success-soft btn-sm" type="button" :disabled="saving" @click="reviewAttendance(record, 'approve')"><AppIcon name="check" :size="15" /> Approve</button>
+                      <button class="btn btn-danger-soft btn-sm" type="button" :disabled="saving" @click="reviewAttendance(record, 'reject')">Reject</button>
+                    </div>
+                    <span v-else class="muted">—</span>
+                  </td>
                 </tr>
-                <tr v-if="attendance.length === 0"><td colspan="9" class="empty">No attendance submissions found.</td></tr>
+                <tr v-if="attendance.length === 0" class="table-empty">
+                  <td colspan="7">
+                    <EmptyState icon="clipboard-check" :title="attendanceStatus === 'pending' ? 'No attendance waiting for review' : 'No attendance submissions'" text="Submissions from students will appear here." />
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <!-- DOCUMENTS -->
+      <div v-else-if="activeTab === 'documents'" class="page">
+        <section class="card">
+          <div class="card-body card-toolbar">
+            <StatusFilter v-model="documentStatus" :options="reviewStatusOptions" @update:model-value="runFilter(loadDocuments)" />
+            <span class="muted count">{{ documents.length }} {{ documents.length === 1 ? 'document' : 'documents' }}</span>
+          </div>
+          <div class="table-wrap card-divider">
+            <table class="table">
+              <thead><tr><th>Document</th><th>Student</th><th>Submitted</th><th>Status</th><th class="cell-actions">Actions</th></tr></thead>
+              <tbody>
+                <tr v-for="document in documents" :key="document.id">
+                  <td>
+                    <div class="person">
+                      <span class="file-icon"><AppIcon name="file-text" :size="18" /></span>
+                      <div><span class="cell-strong doc-name" :title="document.document_name">{{ document.document_name }}</span><span class="cell-sub">{{ document.document_type || 'Document' }}</span></div>
+                    </div>
+                  </td>
+                  <td>{{ document.student_name }}</td>
+                  <td class="nowrap">{{ dateLabel(document.submitted_at) }}</td>
+                  <td class="cell-wrap">
+                    <span :class="badgeClass(document.status)">{{ titleCase(document.status) }}</span>
+                    <span v-if="document.admin_remarks" class="cell-sub remark">{{ document.admin_remarks }}</span>
+                  </td>
+                  <td class="cell-actions">
+                    <div class="button-row">
+                      <button class="btn btn-ghost btn-sm" type="button" @click="downloadDocument(document)"><AppIcon name="download" :size="15" /> Open</button>
+                      <template v-if="document.status === 'pending'">
+                        <button class="btn btn-success-soft btn-sm" type="button" :disabled="saving" @click="reviewDocument(document, 'approve')"><AppIcon name="check" :size="15" /> Approve</button>
+                        <button class="btn btn-danger-soft btn-sm" type="button" :disabled="saving" @click="reviewDocument(document, 'reject')">Reject</button>
+                      </template>
+                    </div>
+                  </td>
+                </tr>
+                <tr v-if="documents.length === 0" class="table-empty">
+                  <td colspan="5">
+                    <EmptyState icon="file-text" :title="documentStatus === 'pending' ? 'No documents waiting for review' : 'No documents found'" text="Files students upload will appear here." />
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <!-- SERVICE HOURS -->
+      <div v-else-if="activeTab === 'hours'" class="page">
+        <section class="card">
+          <div class="card-header">
+            <div><h3>Record an adjustment</h3><p>Every adjustment needs a reason and is written to the activity log.</p></div>
+          </div>
+          <form class="card-body" @submit.prevent="createAdjustment">
+            <div class="form-grid">
+              <label class="field">
+                <span class="field-label">Course</span>
+                <select v-model="adjustmentPicker.filter.course">
+                  <option value="">All courses</option>
+                  <option v-for="course in adjustmentPicker.courses" :key="course" :value="course">{{ course }}</option>
+                </select>
+              </label>
+              <label class="field">
+                <span class="field-label">Year level</span>
+                <select v-model="adjustmentPicker.filter.year_level">
+                  <option value="">All year levels</option>
+                  <option v-for="year in adjustmentPicker.yearLevels" :key="year" :value="year">Year {{ year }}</option>
+                </select>
+              </label>
+              <label class="field">
+                <span class="field-label">Section</span>
+                <select v-model="adjustmentPicker.filter.section">
+                  <option value="">All sections</option>
+                  <option v-for="section in adjustmentPicker.sections" :key="section.value" :value="section.value">{{ section.label }}</option>
+                </select>
+              </label>
+              <label class="field span-full">
+                <span class="field-label">Student</span>
+                <select v-model="adjustmentForm.student_id" required :disabled="adjustmentPicker.students.length === 0" @change="runFilter(loadSelectedProgress)">
+                  <option value="">{{ adjustmentPicker.students.length ? 'Select a student' : 'No students match' }}</option>
+                  <option v-for="student in adjustmentPicker.students" :key="student.id" :value="student.id">{{ student.full_name }} · {{ student.student_id }}</option>
+                </select>
+                <span v-if="adjustmentPicker.active" class="field-hint">{{ adjustmentPicker.students.length }} of {{ students.length }} students</span>
+              </label>
+
+              <div v-if="adjustmentForm.student_id && selectedProgress" class="span-full progress-strip">
+                <div class="progress-strip-copy">
+                  <span>Current progress</span>
+                  <strong>{{ hours(selectedProgress.completedHours) }} of {{ selectedProgress.requiredHours }} hrs</strong>
+                  <span class="muted">· {{ hours(selectedProgress.remainingHours) }} remaining</span>
+                </div>
+                <div class="progress"><div class="progress-fill" :style="{ width: `${Math.min(100, Number(selectedProgress.completionPercentage) || 0)}%` }"></div></div>
+              </div>
+
+              <div class="field">
+                <span class="field-label">Type</span>
+                <div class="segmented type-toggle" role="group" aria-label="Adjustment type">
+                  <button type="button" :class="{ active: adjustmentForm.adjustment_type === 'add' }" :aria-pressed="adjustmentForm.adjustment_type === 'add'" @click="adjustmentForm.adjustment_type = 'add'"><AppIcon name="plus" :size="14" /> Add hours</button>
+                  <button type="button" :class="{ active: adjustmentForm.adjustment_type === 'deduct' }" :aria-pressed="adjustmentForm.adjustment_type === 'deduct'" @click="adjustmentForm.adjustment_type = 'deduct'"><AppIcon name="minus" :size="14" /> Deduct hours</button>
+                </div>
+              </div>
+              <label class="field">
+                <span class="field-label">Hours</span>
+                <input v-model.number="adjustmentForm.adjustment_amount" type="number" min="0.01" max="340" step="0.01" required placeholder="0.00">
+              </label>
+              <div></div>
+              <label class="field span-full">
+                <span class="field-label">Reason</span>
+                <textarea v-model="adjustmentForm.reason" minlength="3" maxlength="500" rows="2" required placeholder="e.g. Carry-over from first semester"></textarea>
+              </label>
+            </div>
+            <div class="form-actions form-actions-top">
+              <button class="btn btn-primary" type="submit" :disabled="saving || !adjustmentForm.student_id">
+                <span v-if="saving" class="spinner spinner-sm"></span>
+                Save adjustment
+              </button>
+            </div>
+          </form>
+        </section>
+
+        <section class="card">
+          <div class="card-header">
+            <div>
+              <h3>Adjustment history</h3>
+              <p>{{ historyFiltered ? `Showing ${filteredAdjustments.length} of ${adjustments.length} adjustments` : 'Every hour adjustment, newest first.' }}</p>
+            </div>
+            <button v-if="historyFiltered" class="btn btn-ghost btn-sm" type="button" @click="clearHistoryFilters">Clear filters</button>
+          </div>
+          <div v-if="adjustments.length" class="card-body">
+            <div class="form-grid cols-4">
+              <label class="field span-full">
+                <span class="sr-only">Search adjustments</span>
+                <span class="input-icon">
+                  <AppIcon name="search" :size="16" />
+                  <input v-model="historySearch" type="search" placeholder="Search by name, student ID or reason" autocomplete="off">
+                </span>
+              </label>
+              <label class="field">
+                <span class="field-label">Course</span>
+                <select v-model="historyPicker.filter.course">
+                  <option value="">All courses</option>
+                  <option v-for="course in historyPicker.courses" :key="course" :value="course">{{ course }}</option>
+                </select>
+              </label>
+              <label class="field">
+                <span class="field-label">Year level</span>
+                <select v-model="historyPicker.filter.year_level">
+                  <option value="">All year levels</option>
+                  <option v-for="year in historyPicker.yearLevels" :key="year" :value="year">Year {{ year }}</option>
+                </select>
+              </label>
+              <label class="field">
+                <span class="field-label">Section</span>
+                <select v-model="historyPicker.filter.section">
+                  <option value="">All sections</option>
+                  <option v-for="section in historyPicker.sections" :key="section.value" :value="section.value">{{ section.label }}</option>
+                </select>
+              </label>
+              <label class="field">
+                <span class="field-label">Student</span>
+                <select v-model="historyStudentId">
+                  <option value="">All students</option>
+                  <option v-for="student in historyPicker.students" :key="student.id" :value="student.id">{{ student.full_name }} · {{ student.student_id }}</option>
+                </select>
+              </label>
+            </div>
+          </div>
+          <div class="table-wrap card-divider spaced">
+            <table class="table">
+              <thead><tr><th>Date</th><th>Student</th><th>Change</th><th>Reason</th></tr></thead>
+              <tbody>
+                <tr v-for="adjustment in pagedAdjustments" :key="adjustment.id">
+                  <td class="nowrap cell-strong">{{ dateLabel(adjustment.created_at) }}</td>
+                  <td>
+                    <span class="cell-strong">{{ adjustment.student_name }}</span>
+                    <span class="cell-sub">{{ adjustment.student_number }} · {{ studentPlacement(adjustment) }}</span>
+                  </td>
+                  <td class="nowrap">
+                    <span class="delta" :class="adjustment.adjustment_type === 'deduct' ? 'minus' : 'plus'">
+                      {{ adjustment.adjustment_type === 'deduct' ? '−' : '+' }}{{ hours(adjustment.adjustment_amount) }} hrs
+                    </span>
+                  </td>
+                  <td class="cell-wrap">{{ adjustment.reason }}</td>
+                </tr>
+                <tr v-if="filteredAdjustments.length === 0" class="table-empty">
+                  <td colspan="4">
+                    <EmptyState icon="clock" :title="adjustments.length ? 'No matching adjustments' : 'No adjustments yet'" :text="adjustments.length ? 'Try a different search or filter.' : 'Adjustments you record will be listed here.'" />
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div v-if="filteredAdjustments.length > HISTORY_PAGE_SIZES[0]" class="card-footer">
+            <div class="button-row">
+              <label class="page-size">
+                <span>Rows per page</span>
+                <select v-model.number="historyPageSize" class="input">
+                  <option v-for="size in HISTORY_PAGE_SIZES" :key="size" :value="size">{{ size }}</option>
+                </select>
+              </label>
+              <span>{{ historyRange.start }}–{{ historyRange.end }} of {{ historyRange.total }}</span>
+            </div>
+            <div class="button-row">
+              <button class="btn btn-secondary btn-sm" type="button" :disabled="historyPage === 1" @click="historyPage--">Previous</button>
+              <span>Page {{ historyPage }} of {{ historyPageCount }}</span>
+              <button class="btn btn-secondary btn-sm" type="button" :disabled="historyPage === historyPageCount" @click="historyPage++">Next</button>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- ACTIVITIES -->
+      <div v-else-if="activeTab === 'activities'" class="page">
+        <div v-if="areas.length === 0" class="alert alert-info">
+          <AppIcon name="info" />
+          <div class="alert-body">You need at least one active service area before creating activities.</div>
+          <button class="btn btn-sm btn-secondary" type="button" @click="selectTab('areas')">Add a service area</button>
+        </div>
+
+        <section class="card">
+          <div class="card-header"><div><h3>Activities</h3><p>Published activities with open registration appear in the student portal. When an activity ends it shows as Done and registered students are notified to log their time. Archive it to move it to Completed activities.</p></div></div>
+          <div class="table-wrap card-divider spaced">
+            <table class="table">
+              <thead><tr><th>Activity</th><th>Schedule</th><th>Registration</th><th>Status</th><th class="cell-actions">Actions</th></tr></thead>
+              <tbody>
+                <tr v-for="activity in activeActivities" :key="activity.id">
+                  <td class="cell-wrap"><span class="cell-strong">{{ activity.title }}</span><span class="cell-sub">{{ activity.service_area }} · {{ hours(activity.required_hours) }} hrs</span></td>
+                  <td class="schedule-cell">{{ formatSchedule(activity.scheduled_start, activity.scheduled_end) }}</td>
+                  <td class="nowrap">
+                    <span class="reg-state" :class="registrationState(activity).tone">{{ registrationState(activity).label }}</span>
+                    <span class="cell-sub">{{ activity.registration_count }}{{ activity.capacity !== null && activity.capacity !== undefined ? ` / ${activity.capacity}` : '' }} registered</span>
+                  </td>
+                  <td class="status-cell">
+                    <template v-if="isDone(activity)">
+                      <span class="badge badge-completed">Done</span>
+                      <span class="cell-sub">Ended {{ timeAgo(activity.scheduled_end) }}<template v-if="activity.ended_notified_at"> · students notified</template></span>
+                    </template>
+                    <span v-else :class="badgeClass(activity.status)">{{ titleCase(activity.status) }}</span>
+                  </td>
+                  <td class="cell-actions">
+                    <div class="button-row">
+                      <button v-if="activity.status !== 'draft'" class="btn btn-ghost btn-sm" type="button" @click="openParticipants(activity)"><AppIcon name="users" :size="15" /> Students</button>
+                      <button class="btn btn-secondary btn-sm" type="button" @click="openActivityForm(activity)"><AppIcon name="edit" :size="15" /> Edit</button>
+                      <button v-if="canArchive(activity)" class="btn btn-secondary btn-sm" type="button" :disabled="saving" @click="archiveActivity(activity)"><AppIcon name="check-check" :size="15" /> Archive</button>
+                      <button v-if="activity.status === 'draft'" class="btn btn-danger-ghost btn-sm btn-icon" type="button" title="Delete draft" :aria-label="`Delete ${activity.title}`" @click="deleteActivity(activity)"><AppIcon name="trash" :size="16" /></button>
+                    </div>
+                  </td>
+                </tr>
+                <tr v-if="activeActivities.length === 0" class="table-empty">
+                  <td colspan="5">
+                    <EmptyState icon="calendar-check" :title="archivedActivities.length ? 'No active activities' : 'No activities yet'" text="Create an activity so students can register for it.">
+                      <button class="btn btn-primary btn-sm" type="button" @click="openActivityForm()"><AppIcon name="plus" :size="16" /> New activity</button>
+                    </EmptyState>
+                  </td>
+                </tr>
               </tbody>
             </table>
           </div>
         </section>
 
-        <section v-else-if="activeTab === 'activities'" class="page-content">
-          <div class="intro"><h2>Service activities</h2><p>Create activities, publish registration, and review student registrations.</p></div>
-          <form class="card form-grid" @submit.prevent="saveActivity">
-            <h3>{{ activityForm.id ? 'Edit activity' : 'Create activity' }}</h3>
-            <label><span>Title</span><input v-model="activityForm.title" maxlength="160" required></label>
-            <label><span>Service area</span><select v-model="activityForm.area_id" required><option value="">Select an area</option><option v-for="area in areas" :key="area.id" :value="area.id">{{ area.area_name }}</option></select></label>
-            <label><span>Location (optional override)</span><input v-model="activityForm.location" maxlength="250"></label>
-            <label class="wide"><span>Description</span><textarea v-model="activityForm.description" maxlength="4000" rows="3" required></textarea></label>
-            <label><span>Starts</span><input v-model="activityForm.scheduled_start" type="datetime-local" required></label>
-            <label><span>Ends</span><input v-model="activityForm.scheduled_end" type="datetime-local" required></label>
-            <label><span>Required hours</span><input v-model.number="activityForm.required_hours" type="number" min="0" step="0.25" required></label>
-            <label><span>Capacity (blank = unlimited)</span><input v-model="activityForm.capacity" type="number" min="0" step="1"></label>
-            <label><span>Eligibility</span><input v-model="activityForm.eligibility" maxlength="1000"></label>
-            <label><span>Status</span><select v-model="activityForm.status"><option value="draft">Draft</option><option value="published">Published</option><option value="cancelled">Cancelled</option></select></label>
-            <label class="checkbox"><input v-model="activityForm.registration_open" type="checkbox"><span>Registration open</span></label>
-            <div class="form-actions"><button class="primary-button" :disabled="saving">{{ saving ? 'Saving…' : activityForm.id ? 'Save changes' : 'Create activity' }}</button><button v-if="activityForm.id" class="secondary-button" type="button" @click="resetActivityForm">Cancel edit</button></div>
-          </form>
-
-          <section class="card">
-            <h3>Activities</h3>
-            <div class="table-wrap"><table><thead><tr><th>Title</th><th>Area</th><th>Schedule</th><th>Registration</th><th>Status</th><th>Registered</th><th>Actions</th></tr></thead>
-              <tbody><tr v-for="activity in activities" :key="activity.id">
-                <td>{{ activity.title }}</td><td>{{ activity.service_area }}</td><td>{{ dateTime(activity.scheduled_start) }} – {{ dateTime(activity.scheduled_end) }}</td>
-                <td>{{ Number(activity.registration_open) ? 'Open' : 'Closed' }}</td><td>{{ titleCase(activity.status) }}</td><td>{{ activity.registration_count }}</td>
-                <td class="actions"><button class="text-button" @click="editActivity(activity)">Edit</button><button v-if="activity.status === 'draft'" class="danger-text" @click="deleteActivity(activity)">Delete</button></td>
-              </tr><tr v-if="activities.length === 0"><td colspan="7" class="empty">No activities created.</td></tr></tbody>
-            </table></div>
-          </section>
-
-          <section class="card">
-            <div class="section-header"><div><h3>Student registrations</h3><p>Pending registrations can be approved or rejected.</p></div><select v-model="registrationStatus" @change="loadRegistrations"><option value="">All statuses</option><option value="pending">Pending</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="cancelled">Cancelled</option></select></div>
-            <div class="table-wrap"><table><thead><tr><th>Student</th><th>Student ID</th><th>Activity</th><th>Registered</th><th>Status</th><th>Review note</th><th>Actions</th></tr></thead>
-              <tbody><tr v-for="registration in registrations" :key="registration.id">
-                <td>{{ registration.student_name }}</td><td>{{ registration.student_number || '—' }}</td><td>{{ registration.activity_title }}</td><td>{{ dateLabel(registration.registered_at) }}</td>
-                <td><span class="badge" :class="`status-${registration.status}`">{{ titleCase(registration.status) }}</span></td><td>{{ registration.review_note || '—' }}</td>
-                <td v-if="registration.status === 'pending'" class="actions"><button class="small-button approve" @click="reviewRegistration(registration, 'approve')">Approve</button><button class="small-button reject" @click="reviewRegistration(registration, 'reject')">Reject</button></td><td v-else>—</td>
-              </tr><tr v-if="registrations.length === 0"><td colspan="7" class="empty">No registrations found.</td></tr></tbody>
-            </table></div>
-          </section>
+        <section v-if="archivedActivities.length" class="card">
+          <div class="card-header"><div><h3>Completed activities</h3><p>Archived activities are hidden from students. Their student list and logged hours stay on record.</p></div></div>
+          <div class="table-wrap card-divider spaced">
+            <table class="table">
+              <thead><tr><th>Activity</th><th>Schedule</th><th>Students</th><th>Archived</th><th class="cell-actions">Actions</th></tr></thead>
+              <tbody>
+                <tr v-for="activity in archivedActivities" :key="activity.id">
+                  <td class="cell-wrap"><span class="cell-strong">{{ activity.title }}</span><span class="cell-sub">{{ activity.service_area }} · {{ hours(activity.required_hours) }} hrs</span></td>
+                  <td class="schedule-cell">{{ formatSchedule(activity.scheduled_start, activity.scheduled_end) }}</td>
+                  <td class="nowrap">
+                    <span class="cell-strong">{{ activity.approved_count }} approved</span>
+                    <span class="cell-sub">{{ hours(activity.approved_hours) }} hrs logged</span>
+                  </td>
+                  <td class="nowrap">{{ dateLabel(activity.archived_at) }}</td>
+                  <td class="cell-actions">
+                    <div class="button-row">
+                      <button class="btn btn-secondary btn-sm" type="button" @click="openParticipants(activity)"><AppIcon name="users" :size="15" /> Students</button>
+                      <button class="btn btn-ghost btn-sm" type="button" :disabled="saving" @click="restoreActivity(activity)"><AppIcon name="rotate-ccw" :size="15" /> Restore</button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </section>
 
-        <section v-else-if="activeTab === 'assignments'" class="page-content">
-          <div class="intro"><h2>Cleaning assignments</h2><p>Assign an active service area and notify the student.</p></div>
-          <form class="card form-grid compact-form" @submit.prevent="createAssignment">
-            <label><span>Student</span><select v-model="assignmentForm.student_id" required><option value="">Select student</option><option v-for="student in students" :key="student.id" :value="student.id">{{ student.full_name }} · {{ student.student_id }}</option></select></label>
-            <label><span>Service area</span><select v-model="assignmentForm.area_id" required><option value="">Select area</option><option v-for="area in areas" :key="area.id" :value="area.id">{{ area.area_name }}</option></select></label>
-            <label><span>Assigned date</span><input v-model="assignmentForm.assigned_date" type="date" required></label>
-            <label><span>Start time</span><input v-model="assignmentForm.schedule_start" type="time"></label>
-            <label><span>End time</span><input v-model="assignmentForm.schedule_end" type="time"></label>
-            <button class="primary-button" :disabled="saving">Create assignment</button>
-          </form>
-          <section class="card"><h3>Current assignments</h3><div class="table-wrap"><table><thead><tr><th>Student</th><th>Area</th><th>Date</th><th>Schedule</th><th>Location</th><th></th></tr></thead><tbody>
-            <tr v-for="assignment in assignments" :key="assignment.id"><td>{{ assignment.student_name }}</td><td>{{ assignment.area_name }}</td><td>{{ dateLabel(assignment.assigned_date) }}</td><td>{{ assignment.schedule_start || 'TBD' }}–{{ assignment.schedule_end || 'TBD' }}</td><td>{{ assignment.location || '—' }}</td><td><button class="danger-text" @click="removeAssignment(assignment)">Remove</button></td></tr>
-            <tr v-if="assignments.length === 0"><td colspan="6" class="empty">No assignments have been made.</td></tr>
-          </tbody></table></div><p class="note">The existing assignment schema has no completion or cancellation status.</p></section>
+        <section class="card">
+          <div class="card-header">
+            <div><h3>Service history</h3><p>Every day an activity took place, newest first. Open a day to see who served and their before and after photos.</p></div>
+          </div>
+          <div v-if="serviceDays.length" class="card-body card-toolbar">
+            <div class="history-toolbar">
+              <label class="input-icon history-search">
+                <span class="sr-only">Search service history</span>
+                <AppIcon name="search" :size="16" />
+                <input v-model="serviceDaySearch" class="input" type="search" placeholder="Search by activity, area or student" autocomplete="off">
+              </label>
+              <label>
+                <span class="sr-only">Month</span>
+                <select v-model="serviceDayMonth" class="input history-month">
+                  <option value="">All months</option>
+                  <option v-for="month in serviceDayMonths" :key="month.value" :value="month.value">{{ month.label }}</option>
+                </select>
+              </label>
+            </div>
+            <span class="muted count">{{ filteredServiceDays.length }} {{ filteredServiceDays.length === 1 ? 'day' : 'days' }}</span>
+          </div>
+          <div class="table-wrap card-divider" :class="{ spaced: !serviceDays.length }">
+            <table class="table">
+              <thead><tr><th>Date</th><th>Activity</th><th>Time</th><th>Students</th><th>Photos</th><th class="cell-actions">Details</th></tr></thead>
+              <tbody>
+                <tr v-for="day in visibleServiceDays" :key="day.key">
+                  <td class="nowrap">
+                    <div class="person">
+                      <div class="date-tile date-tile-sm"><span>{{ dateParts(day.date).month }}</span><strong>{{ dateParts(day.date).day }}</strong></div>
+                      <div><span class="cell-strong">{{ weekdayLabel(day.date) }}</span><span class="cell-sub">{{ dateLabel(day.date) }}</span></div>
+                    </div>
+                  </td>
+                  <td class="cell-wrap">
+                    <span class="cell-strong">{{ day.activity.title }}</span>
+                    <span class="cell-sub">{{ activityPlace(day.activity) }}</span>
+                  </td>
+                  <td class="nowrap">{{ activityTimes(day.activity) }}</td>
+                  <td class="nowrap">
+                    <template v-if="day.studentCount">
+                      <span class="cell-strong">{{ day.studentCount }} {{ day.studentCount === 1 ? 'student' : 'students' }}</span>
+                      <span class="cell-sub">{{ hours(day.approvedHours) }} hrs approved<template v-if="day.pendingCount"> · {{ day.pendingCount }} pending</template></span>
+                    </template>
+                    <span v-else class="muted">No time logged</span>
+                  </td>
+                  <td class="nowrap">
+                    <span v-if="day.photoCount" class="photo-count"><AppIcon name="camera" :size="15" /> {{ day.photoCount }}</span>
+                    <span v-else class="muted">—</span>
+                  </td>
+                  <td class="cell-actions">
+                    <button class="btn btn-secondary btn-sm" type="button" @click="openServiceDay(day)"><AppIcon name="eye" :size="15" /> View day</button>
+                  </td>
+                </tr>
+                <tr v-if="filteredServiceDays.length === 0" class="table-empty">
+                  <td colspan="6">
+                    <EmptyState
+                      icon="calendar"
+                      :title="serviceDays.length ? 'No matching days' : 'No service days yet'"
+                      :text="serviceDays.length ? 'Try a different search or month.' : 'When an activity ends, the day it took place is listed here.'"
+                    />
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div v-if="filteredServiceDays.length > visibleServiceDays.length" class="card-footer">
+            <span>Showing {{ visibleServiceDays.length }} of {{ filteredServiceDays.length }} days</span>
+            <button class="btn btn-secondary btn-sm" type="button" @click="serviceDayLimit += SERVICE_DAY_STEP">Show more</button>
+          </div>
         </section>
 
-        <section v-else-if="activeTab === 'hours'" class="page-content">
-          <div class="intro"><h2>Service-hour adjustments</h2><p>Every adjustment requires a reason and is recorded in the activity log.</p></div>
-          <form class="card form-grid compact-form" @submit.prevent="createAdjustment">
-            <label><span>Student</span><select v-model="adjustmentForm.student_id" required @change="loadAdjustments"><option value="">Select student</option><option v-for="student in students" :key="student.id" :value="student.id">{{ student.full_name }} · {{ student.student_id }}</option></select></label>
-            <label><span>Type</span><select v-model="adjustmentForm.adjustment_type"><option value="add">Add hours</option><option value="deduct">Deduct hours</option></select></label>
-            <label><span>Hours</span><input v-model.number="adjustmentForm.adjustment_amount" type="number" min="0.01" max="340" step="0.01" required></label>
-            <label class="wide"><span>Reason (required)</span><textarea v-model="adjustmentForm.reason" minlength="3" maxlength="500" required></textarea></label>
-            <button class="primary-button" :disabled="saving || !adjustmentForm.student_id">Save adjustment</button>
-          </form>
-          <section class="card"><h3>Adjustment history</h3><div class="table-wrap"><table><thead><tr><th>Date</th><th>Type</th><th>Hours</th><th>Reason</th></tr></thead><tbody>
-            <tr v-for="adjustment in adjustments" :key="adjustment.id"><td>{{ dateLabel(adjustment.created_at) }}</td><td>{{ titleCase(adjustment.adjustment_type) }}</td><td>{{ hours(adjustment.adjustment_amount) }}</td><td>{{ adjustment.reason }}</td></tr>
-            <tr v-if="adjustments.length === 0"><td colspan="4" class="empty">Select a student to view adjustments.</td></tr>
-          </tbody></table></div></section>
+        <section class="card">
+          <div class="card-header">
+            <div><h3>Student registrations</h3><p>Approve or reject students who signed up for an activity.</p></div>
+          </div>
+          <div class="card-body card-toolbar">
+            <StatusFilter v-model="registrationStatus" :options="registrationStatusOptions" @update:model-value="runFilter(loadRegistrations)" />
+          </div>
+          <div class="table-wrap card-divider">
+            <table class="table">
+              <thead><tr><th>Student</th><th>Activity</th><th>Registered</th><th>Status</th><th class="cell-actions">Review</th></tr></thead>
+              <tbody>
+                <tr v-for="registration in registrations" :key="registration.id">
+                  <td>
+                    <div class="person">
+                      <StudentAvatar class="avatar-sm" :name="registration.student_name" :photo-url="registration.profile_photo_url" />
+                      <div><span class="cell-strong">{{ registration.student_name }}</span><span class="cell-sub">{{ registration.student_number || '—' }}</span></div>
+                    </div>
+                  </td>
+                  <td>{{ registration.activity_title }}</td>
+                  <td class="nowrap">{{ dateLabel(registration.registered_at) }}</td>
+                  <td class="cell-wrap">
+                    <span :class="badgeClass(registration.status)">{{ titleCase(registration.status) }}</span>
+                    <span v-if="registration.review_note" class="cell-sub remark">{{ registration.review_note }}</span>
+                  </td>
+                  <td class="cell-actions">
+                    <div v-if="registration.status === 'pending'" class="button-row">
+                      <button class="btn btn-success-soft btn-sm" type="button" :disabled="saving" @click="reviewRegistration(registration, 'approve')"><AppIcon name="check" :size="15" /> Approve</button>
+                      <button class="btn btn-danger-soft btn-sm" type="button" :disabled="saving" @click="reviewRegistration(registration, 'reject')">Reject</button>
+                    </div>
+                    <span v-else class="muted">—</span>
+                  </td>
+                </tr>
+                <tr v-if="registrations.length === 0" class="table-empty">
+                  <td colspan="5"><EmptyState icon="users" title="No registrations found" text="Student sign-ups for activities will appear here." /></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </section>
+      </div>
 
-        <section v-else-if="activeTab === 'documents'" class="page-content">
-          <div class="intro"><h2>Document review</h2><p>Review submitted documents and leave notes visible to the student.</p></div>
-          <div class="filter-row"><label><span>Status</span><select v-model="documentStatus" @change="loadDocuments"><option value="">All statuses</option><option value="pending">Pending</option><option value="approved">Approved</option><option value="rejected">Rejected</option></select></label></div>
-          <div class="table-wrap card"><table><thead><tr><th>Student</th><th>Document</th><th>Type</th><th>Submitted</th><th>Status</th><th>Remarks</th><th>Actions</th></tr></thead><tbody>
-            <tr v-for="document in documents" :key="document.id"><td>{{ document.student_name }}</td><td>{{ document.document_name }}</td><td>{{ document.document_type || '—' }}</td><td>{{ dateLabel(document.submitted_at) }}</td>
-              <td><span class="badge" :class="`status-${document.status}`">{{ titleCase(document.status) }}</span></td><td>{{ document.admin_remarks || '—' }}</td>
-              <td class="actions"><button class="text-button" @click="downloadDocument(document)">View file</button><template v-if="document.status === 'pending'"><button class="small-button approve" @click="reviewDocument(document, 'approve')">Approve</button><button class="small-button reject" @click="reviewDocument(document, 'reject')">Reject</button></template></td>
-            </tr><tr v-if="documents.length === 0"><td colspan="7" class="empty">No documents found.</td></tr>
-          </tbody></table></div>
+      <!-- AREAS -->
+      <div v-else-if="activeTab === 'areas'" class="page">
+        <section class="card">
+          <div class="card-header"><div><h3>Service areas</h3><p>Inactive areas stay on existing records but can't be picked for new activities.</p></div></div>
+          <div class="table-wrap card-divider spaced">
+            <table class="table">
+              <thead><tr><th>Area</th><th>Location</th><th>Description</th><th>Status</th><th class="cell-actions">Actions</th></tr></thead>
+              <tbody>
+                <tr v-for="area in allAreas" :key="area.id">
+                  <td class="cell-strong">{{ area.area_name }}</td>
+                  <td>{{ area.location || '—' }}</td>
+                  <td class="cell-wrap muted">{{ area.description || '—' }}</td>
+                  <td><span :class="badgeClass(area.status)">{{ titleCase(area.status) }}</span></td>
+                  <td class="cell-actions"><button class="btn btn-secondary btn-sm" type="button" @click="openAreaForm(area)"><AppIcon name="edit" :size="15" /> Edit</button></td>
+                </tr>
+                <tr v-if="allAreas.length === 0" class="table-empty">
+                  <td colspan="5">
+                    <EmptyState icon="map-pin" title="No service areas yet" text="Add an area to start creating activities.">
+                      <button class="btn btn-primary btn-sm" type="button" @click="openAreaForm()"><AppIcon name="plus" :size="16" /> Add area</button>
+                    </EmptyState>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </section>
+      </div>
 
-        <section v-else-if="activeTab === 'announcements'" class="page-content">
-          <div class="intro"><h2>Announcements</h2><p>Publishing sends a notification to approved students in the target audience.</p></div>
-          <form class="card form-grid" @submit.prevent="saveAnnouncement">
-            <h3>{{ announcementForm.id ? 'Edit announcement' : 'Publish announcement' }}</h3>
-            <label><span>Title</span><input v-model="announcementForm.title" maxlength="200" required></label>
-            <label><span>Target section (blank = all students)</span><select v-model="announcementForm.target_section_id"><option value="">All students</option><option v-for="section in sections" :key="section.id" :value="section.id">{{ section.course }} · {{ section.year_level }} · {{ section.section_name }}</option></select></label>
-            <label class="wide"><span>Content</span><textarea v-model="announcementForm.content" rows="4" maxlength="10000" required></textarea></label>
-            <div class="form-actions"><button class="primary-button" :disabled="saving">{{ announcementForm.id ? 'Save changes' : 'Publish' }}</button><button v-if="announcementForm.id" class="secondary-button" type="button" @click="resetAnnouncementForm">Cancel edit</button></div>
-          </form>
-          <section class="card"><h3>Published announcements</h3><div class="table-wrap"><table><thead><tr><th>Title</th><th>Target</th><th>Created</th><th>Actions</th></tr></thead><tbody>
-            <tr v-for="announcement in announcements" :key="announcement.id"><td>{{ announcement.title }}</td><td>{{ announcement.section_name || 'All students' }}</td><td>{{ dateLabel(announcement.created_at) }}</td><td class="actions"><button class="text-button" @click="editAnnouncement(announcement)">Edit</button><button class="danger-text" @click="deleteAnnouncement(announcement)">Delete</button></td></tr>
-            <tr v-if="announcements.length === 0"><td colspan="4" class="empty">No announcements published.</td></tr>
-          </tbody></table></div><p class="note">The current schema has no draft, archive, category, or importance fields. Announcements publish immediately and can be edited or deleted.</p></section>
+      <!-- ANNOUNCEMENTS -->
+      <div v-else-if="activeTab === 'announcements'" class="page">
+        <section class="card">
+          <div class="card-header"><div><h3>Published announcements</h3><p>Announcements publish immediately and notify approved students in the audience.</p></div></div>
+          <ul v-if="announcements.length" class="list spaced">
+            <li v-for="announcement in announcements" :key="announcement.id" class="list-item">
+              <span class="list-icon tone-amber"><AppIcon name="megaphone" :size="18" /></span>
+              <div class="list-item-body">
+                <p class="list-item-title">{{ announcement.title }}</p>
+                <p class="list-item-text clamp-2">{{ announcement.content }}</p>
+                <div class="list-item-meta">
+                  <span class="badge badge-plain" :class="announcement.section_name ? 'badge-info' : 'badge-neutral'">{{ announcement.section_name || 'All students' }}</span>
+                  <span>{{ dateLabel(announcement.created_at) }}</span>
+                </div>
+              </div>
+              <div class="button-row">
+                <button class="btn btn-secondary btn-sm" type="button" @click="openAnnouncementForm(announcement)"><AppIcon name="edit" :size="15" /> Edit</button>
+                <button class="btn btn-danger-ghost btn-sm btn-icon" type="button" title="Delete" :aria-label="`Delete ${announcement.title}`" @click="deleteAnnouncement(announcement)"><AppIcon name="trash" :size="16" /></button>
+              </div>
+            </li>
+          </ul>
+          <EmptyState v-else icon="megaphone" title="No announcements yet" text="Share updates with all students or a single section.">
+            <button class="btn btn-primary btn-sm" type="button" @click="openAnnouncementForm()"><AppIcon name="plus" :size="16" /> New announcement</button>
+          </EmptyState>
         </section>
+      </div>
+    </template>
+
+    <!-- ACTIVITY FORM -->
+    <AppModal
+      :open="activityModalOpen"
+      size="lg"
+      :eyebrow="activityForm.id ? 'Edit activity' : 'New activity'"
+      :title="activityForm.id ? activityForm.title || 'Edit activity' : 'Create a service activity'"
+      :close-on-backdrop="false"
+      @close="closeActivityForm"
+    >
+      <form id="activity-form" class="form-grid cols-2" @submit.prevent="saveActivity">
+        <label class="field span-full"><span class="field-label">Title</span><input v-model="activityForm.title" maxlength="160" required placeholder="e.g. Library Inventory Week"></label>
+        <label class="field">
+          <span class="field-label">Service area</span>
+          <select v-model="activityForm.area_id" required>
+            <option value="">Select an area</option>
+            <option v-for="area in areas" :key="area.id" :value="area.id">{{ area.area_name }}</option>
+          </select>
+        </label>
+        <label class="field"><span class="field-label">Location <span class="optional">(overrides the area's)</span></span><input v-model="activityForm.location" maxlength="250"></label>
+        <label class="field span-full"><span class="field-label">Description</span><textarea v-model="activityForm.description" maxlength="4000" rows="3" required></textarea></label>
+        <label class="field"><span class="field-label">Starts</span><input v-model="activityForm.scheduled_start" type="datetime-local" required></label>
+        <label class="field"><span class="field-label">Ends</span><input v-model="activityForm.scheduled_end" type="datetime-local" required></label>
+        <label class="field"><span class="field-label">Service hours</span><input v-model.number="activityForm.required_hours" type="number" min="0" step="0.25" required></label>
+        <label class="field"><span class="field-label">Capacity <span class="optional">(blank = unlimited)</span></span><input v-model="activityForm.capacity" type="number" min="0" step="1"></label>
+        <label class="field span-full"><span class="field-label">Eligibility <span class="optional">(optional)</span></span><input v-model="activityForm.eligibility" maxlength="1000" placeholder="e.g. 2nd year and above"></label>
+        <label class="field">
+          <span class="field-label">Status</span>
+          <select v-model="activityForm.status">
+            <option value="draft">Draft — hidden from students</option>
+            <option value="published">Published</option>
+            <option value="cancelled">Cancelled</option>
+          </select>
+        </label>
+        <div class="field">
+          <span class="field-label">Registration</span>
+          <label class="check-field"><input v-model="activityForm.registration_open" type="checkbox"> Students can register</label>
+        </div>
+      </form>
+      <template #footer>
+        <button class="btn btn-secondary" type="button" :disabled="saving" @click="closeActivityForm">Cancel</button>
+        <button class="btn btn-primary" type="submit" form="activity-form" :disabled="saving">
+          <span v-if="saving" class="spinner spinner-sm"></span>
+          {{ saving ? 'Saving…' : activityForm.id ? 'Save changes' : 'Create activity' }}
+        </button>
       </template>
+    </AppModal>
 
-      <footer class="footer">RSS Administration Panel · 2026</footer>
-    </main>
-  </div>
+    <!-- ACTIVITY PARTICIPANTS -->
+    <AppModal
+      :open="participants.open"
+      size="lg"
+      eyebrow="Students"
+      :title="participants.activity ? participants.activity.title : ''"
+      :subtitle="participants.activity ? formatSchedule(participants.activity.scheduled_start, participants.activity.scheduled_end) : ''"
+      @close="closeParticipants"
+    >
+      <div v-if="participants.loading" class="loading-state" role="status">
+        <span class="spinner"></span>
+        <span>Loading students…</span>
+      </div>
+      <EmptyState v-else-if="participants.rows.length === 0" icon="users" title="No students yet" text="Nobody registered for or logged hours on this activity." />
+      <div v-else class="table-wrap">
+        <table class="table">
+          <thead><tr><th>Student</th><th>Registration</th><th>Hours logged</th></tr></thead>
+          <tbody>
+            <tr v-for="participant in participants.rows" :key="participant.student_id">
+              <td>
+                <div class="person">
+                  <StudentAvatar class="avatar-sm" :name="participant.student_name" :photo-url="participant.profile_photo_url" />
+                  <div><span class="cell-strong">{{ participant.student_name }}</span><span class="cell-sub">{{ participant.student_number || '—' }}</span></div>
+                </div>
+              </td>
+              <td>
+                <span v-if="participant.registration_status" :class="badgeClass(participant.registration_status)">{{ titleCase(participant.registration_status) }}</span>
+                <span v-else class="cell-sub">Not registered</span>
+              </td>
+              <td class="nowrap">
+                <span class="cell-strong">{{ hours(participant.approved_hours) }} hrs</span>
+                <span v-if="Number(participant.pending_hours)" class="cell-sub">+ {{ hours(participant.pending_hours) }} hrs pending</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <template #footer>
+        <button class="btn btn-secondary" type="button" @click="closeParticipants">Close</button>
+      </template>
+    </AppModal>
+
+    <!-- SERVICE DAY -->
+    <AppModal
+      :open="serviceDay.open"
+      size="lg"
+      :eyebrow="serviceDay.day ? `${weekdayLabel(serviceDay.day.date)}, ${dateLabel(serviceDay.day.date)}` : ''"
+      :title="serviceDay.day ? serviceDay.day.activity.title : ''"
+      :subtitle="serviceDay.day ? `${activityPlace(serviceDay.day.activity)} · ${activityTimes(serviceDay.day.activity)}` : ''"
+      @close="closeServiceDay"
+    >
+      <template v-if="serviceDay.day">
+        <EmptyState
+          v-if="serviceDay.day.records.length === 0"
+          icon="clipboard-check"
+          title="No time logged for this day"
+          text="Registered students are reminded to log their time once the activity ends."
+        />
+        <div v-else class="table-wrap">
+          <table class="table">
+            <thead><tr><th>Student</th><th>Time</th><th>Hours</th><th>Photos</th><th>Status</th></tr></thead>
+            <tbody>
+              <tr v-for="record in serviceDay.day.records" :key="record.id">
+                <td>
+                  <div class="person">
+                    <StudentAvatar class="avatar-sm" :name="record.student_name" :photo-url="record.profile_photo_url" />
+                    <div><span class="cell-strong">{{ record.student_name }}</span><span class="cell-sub">{{ record.student_number || '—' }}</span></div>
+                  </div>
+                </td>
+                <td class="nowrap">{{ formatTimeRange(record.time_in, record.time_out, '—') }}</td>
+                <td class="cell-num cell-strong">{{ hours(record.total_hours) }}</td>
+                <td class="nowrap">
+                  <div v-if="Number(record.has_before_photo) || Number(record.has_after_photo)" class="photo-pair">
+                    <template v-for="kind in ['before', 'after']" :key="kind">
+                      <AuthPhoto
+                        v-if="Number(record[`has_${kind}_photo`])"
+                        :src="`${API_URL}/admin/attendance/${encodeURIComponent(record.id)}/photos/${kind}`"
+                        :token="token"
+                        :label="`${titleCase(kind)} photo`"
+                        :caption="titleCase(kind)"
+                        :subtitle="`${record.student_name} · ${serviceDay.day.activity.title} · ${dateLabel(serviceDay.day.date)}`"
+                      />
+                    </template>
+                  </div>
+                  <span v-else class="muted">No photos</span>
+                </td>
+                <td><span :class="badgeClass(record.status)">{{ titleCase(record.status) }}</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </template>
+      <template #footer>
+        <button class="btn btn-secondary" type="button" @click="closeServiceDay">Close</button>
+      </template>
+    </AppModal>
+
+    <!-- AREA FORM -->
+    <AppModal
+      :open="areaModalOpen"
+      :eyebrow="areaForm.id ? 'Edit service area' : 'New service area'"
+      :title="areaForm.id ? areaForm.area_name || 'Edit service area' : 'Add a service area'"
+      :close-on-backdrop="false"
+      @close="closeAreaForm"
+    >
+      <form id="area-form" class="form-grid cols-2" @submit.prevent="saveArea">
+        <label class="field span-full"><span class="field-label">Name</span><input v-model="areaForm.area_name" maxlength="100" required placeholder="e.g. Main Library"></label>
+        <label class="field"><span class="field-label">Location <span class="optional">(optional)</span></span><input v-model="areaForm.location" maxlength="250"></label>
+        <label class="field">
+          <span class="field-label">Status</span>
+          <select v-model="areaForm.status"><option value="active">Active</option><option value="inactive">Inactive</option></select>
+        </label>
+        <label class="field span-full"><span class="field-label">Description <span class="optional">(optional)</span></span><textarea v-model="areaForm.description" maxlength="500" rows="2"></textarea></label>
+      </form>
+      <template #footer>
+        <button class="btn btn-secondary" type="button" :disabled="saving" @click="closeAreaForm">Cancel</button>
+        <button class="btn btn-primary" type="submit" form="area-form" :disabled="saving">
+          <span v-if="saving" class="spinner spinner-sm"></span>
+          {{ saving ? 'Saving…' : areaForm.id ? 'Save changes' : 'Add area' }}
+        </button>
+      </template>
+    </AppModal>
+
+    <!-- ANNOUNCEMENT FORM -->
+    <AppModal
+      :open="announcementModalOpen"
+      size="lg"
+      :eyebrow="announcementForm.id ? 'Edit announcement' : 'New announcement'"
+      :title="announcementForm.id ? 'Edit announcement' : 'Publish an announcement'"
+      :subtitle="announcementForm.id ? '' : 'Approved students in the audience get a notification right away.'"
+      :close-on-backdrop="false"
+      @close="closeAnnouncementForm"
+    >
+      <form id="announcement-form" class="form-grid cols-2" @submit.prevent="saveAnnouncement">
+        <label class="field span-full"><span class="field-label">Title</span><input v-model="announcementForm.title" maxlength="200" required></label>
+        <label class="field span-full">
+          <span class="field-label">Audience</span>
+          <select v-model="announcementForm.target_section_id">
+            <option value="">All students</option>
+            <option v-for="section in sections" :key="section.id" :value="section.id">{{ section.course }} · Year {{ section.year_level }} · {{ section.section_name }}</option>
+          </select>
+        </label>
+        <label class="field span-full">
+          <span class="field-label">Message</span>
+          <textarea v-model="announcementForm.content" rows="7" maxlength="10000" required></textarea>
+          <span class="field-hint">{{ announcementForm.content.length.toLocaleString() }} / 10,000 characters</span>
+        </label>
+      </form>
+      <template #footer>
+        <button class="btn btn-secondary" type="button" :disabled="saving" @click="closeAnnouncementForm">Cancel</button>
+        <button class="btn btn-primary" type="submit" form="announcement-form" :disabled="saving">
+          <span v-if="saving" class="spinner spinner-sm"></span>
+          <AppIcon v-else-if="!announcementForm.id" name="megaphone" :size="16" />
+          {{ saving ? 'Saving…' : announcementForm.id ? 'Save changes' : 'Publish' }}
+        </button>
+      </template>
+    </AppModal>
+  </AdminLayout>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, defineComponent, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import AdminLayout from '@/components/AdminLayout.vue'
+import AppIcon from '@/components/AppIcon.vue'
+import AppModal from '@/components/AppModal.vue'
+import AuthPhoto from '@/components/AuthPhoto.vue'
+import StudentAvatar from '@/components/StudentAvatar.vue'
+import { confirm } from '@/composables/useConfirm'
+import { useToast } from '@/composables/useToast'
+import { parseApiDate } from '@/utils/dates'
+import { badgeClass, dateParts, formatSchedule, formatTimeRange, timeAgo, titleCase } from '@/utils/format'
+import { readSession } from '@/utils/session'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api'
 const route = useRoute()
 const router = useRouter()
+const toast = useToast()
+
 const tabs = [
-  { id: 'attendance', label: 'Attendance', icon: '▣' },
-  { id: 'hours', label: 'Service Hours', icon: '◷' },
-  { id: 'activities', label: 'Service Activities', icon: '✦' },
-  { id: 'assignments', label: 'Cleaning Assignments', icon: '⌂' },
-  { id: 'documents', label: 'Documents', icon: '▤' },
-  { id: 'announcements', label: 'Announcements', icon: '♧' }
+  { id: 'attendance', label: 'Attendance', subtitle: 'Review submitted service days — only approved hours count' },
+  { id: 'documents', label: 'Documents', subtitle: 'Review files submitted by students' },
+  { id: 'hours', label: 'Service Hours', subtitle: 'Add or deduct hours with a recorded reason' },
+  { id: 'activities', label: 'Service Activities', subtitle: 'Create activities and review student registrations' },
+  { id: 'areas', label: 'Service Areas', subtitle: 'Places where service activities happen' },
+  { id: 'announcements', label: 'Announcements', subtitle: 'Publish updates to all students or a single section' }
 ]
+const reviewStatusOptions = [
+  { value: 'pending', label: 'Pending' },
+  { value: 'approved', label: 'Approved' },
+  { value: 'rejected', label: 'Rejected' },
+  { value: '', label: 'All' }
+]
+const registrationStatusOptions = [...reviewStatusOptions.slice(0, 3), { value: 'cancelled', label: 'Cancelled' }, { value: '', label: 'All' }]
+
 const activeTab = computed(() => tabs.some(tab => tab.id === route.params.module) ? route.params.module : 'attendance')
 const activeLabel = computed(() => tabs.find(tab => tab.id === activeTab.value)?.label || 'Attendance')
+const activeSubtitle = computed(() => tabs.find(tab => tab.id === activeTab.value)?.subtitle || '')
 const token = ref('')
 const loading = ref(false)
 const saving = ref(false)
 const errorMessage = ref('')
-const successMessage = ref('')
 const attendance = ref([])
 const activities = ref([])
 const registrations = ref([])
-const assignments = ref([])
 const students = ref([])
 const areas = ref([])
 const adjustments = ref([])
+const selectedProgress = ref(null)
 const documents = ref([])
 const announcements = ref([])
 const sections = ref([])
+const allAreas = ref([])
 const attendanceStatus = ref('pending')
 const registrationStatus = ref('pending')
 const documentStatus = ref('pending')
+const activityModalOpen = ref(false)
+const areaModalOpen = ref(false)
+const announcementModalOpen = ref(false)
+const participants = reactive({ open: false, loading: false, activity: null, rows: [] })
+const activeActivities = computed(() => activities.value.filter(activity => !activity.archived_at))
+const archivedActivities = computed(() => activities.value.filter(activity => activity.archived_at))
+
+// Service history: one row per day an activity took place. That is each date students
+// logged time for it, or, when an activity ended and nobody has logged time yet, its
+// scheduled date. Rejected attendance doesn't count as having served.
+const activityAttendance = ref([])
+const serviceDay = reactive({ open: false, day: null })
+const serviceDays = computed(() => {
+  const activityById = new Map(activities.value.map(activity => [activity.id, activity]))
+  const days = new Map()
+  const dayFor = (activity, date) => {
+    const key = `${activity.id}|${date}`
+    if (!days.has(key)) days.set(key, { key, date, activity, records: [] })
+    return days.get(key)
+  }
+  for (const record of activityAttendance.value) {
+    const activity = activityById.get(record.activity_id)
+    if (!activity || record.status === 'rejected') continue
+    dayFor(activity, String(record.attendance_date).slice(0, 10)).records.push(record)
+  }
+  const logged = new Set([...days.values()].map(day => day.activity.id))
+  for (const activity of activities.value) {
+    if (logged.has(activity.id) || !isDone(activity)) continue
+    dayFor(activity, String(activity.scheduled_start).slice(0, 10))
+  }
+  return [...days.values()]
+    .map(day => {
+      const records = [...day.records].sort((a, b) =>
+        String(a.time_in || '').localeCompare(String(b.time_in || '')) || byNaturalOrder(a.student_name, b.student_name))
+      return {
+        ...day,
+        records,
+        studentCount: new Set(records.map(record => record.student_id)).size,
+        approvedHours: records.reduce((sum, record) => sum + (record.status === 'approved' ? Number(record.total_hours) || 0 : 0), 0),
+        pendingCount: records.filter(record => record.status === 'pending').length,
+        photoCount: records.reduce((sum, record) => sum + Number(record.has_before_photo || 0) + Number(record.has_after_photo || 0), 0)
+      }
+    })
+    .sort((a, b) => b.date.localeCompare(a.date) ||
+      String(b.activity.scheduled_start).localeCompare(String(a.activity.scheduled_start)))
+})
+
+const serviceDaySearch = ref('')
+const serviceDayMonth = ref('')
+const monthFormat = new Intl.DateTimeFormat('en-PH', { month: 'long', year: 'numeric' })
+const serviceDayMonths = computed(() => [...new Set(serviceDays.value.map(day => day.date.slice(0, 7)))]
+  .map(value => {
+    const date = parseApiDate(`${value}-01`)
+    return { value, label: date ? monthFormat.format(date) : value }
+  }))
+const filteredServiceDays = computed(() => {
+  let rows = serviceDays.value
+  if (serviceDayMonth.value) rows = rows.filter(day => day.date.startsWith(serviceDayMonth.value))
+  const term = serviceDaySearch.value.trim().toLowerCase()
+  if (term) {
+    rows = rows.filter(day => [
+      day.activity.title, day.activity.service_area, day.activity.location,
+      ...day.records.flatMap(record => [record.student_name, record.student_number])
+    ].some(value => String(value || '').toLowerCase().includes(term)))
+  }
+  return rows
+})
+
+// The list shows SERVICE_DAY_STEP days at a time; a new search or month starts over.
+const SERVICE_DAY_STEP = 10
+const serviceDayLimit = ref(SERVICE_DAY_STEP)
+const visibleServiceDays = computed(() => filteredServiceDays.value.slice(0, serviceDayLimit.value))
+watch([serviceDaySearch, serviceDayMonth], () => { serviceDayLimit.value = SERVICE_DAY_STEP })
+watch(serviceDayMonths, months => {
+  if (serviceDayMonth.value && !months.some(month => month.value === serviceDayMonth.value)) serviceDayMonth.value = ''
+})
+
+function openServiceDay(day) {
+  Object.assign(serviceDay, { open: true, day })
+}
+
+function closeServiceDay() {
+  serviceDay.open = false
+}
 
 const activityForm = reactive({
   id: '', title: '', area_id: '', description: '', location: '',
   scheduled_start: '', scheduled_end: '', required_hours: 0,
   capacity: '', eligibility: '', registration_open: true, status: 'draft'
 })
-const assignmentForm = reactive({ student_id: '', area_id: '', assigned_date: '', schedule_start: '', schedule_end: '' })
 const adjustmentForm = reactive({ student_id: '', adjustment_type: 'add', adjustment_amount: '', reason: '' })
 const announcementForm = reactive({ id: '', title: '', content: '', target_section_id: '' })
+const areaForm = reactive({ id: '', area_name: '', location: '', description: '', status: 'active' })
+// Course, year level and section narrow a list of students, each one limiting the
+// options of the next. Students with no section are grouped under NO_SECTION so they
+// can still be found. The Service Hours form and its history table each get their own.
+const NO_SECTION = '__none__'
+const byNaturalOrder = (a, b) => String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' })
+const uniqueSorted = values => [...new Set(values.filter(Boolean))].sort(byNaturalOrder)
+
+function createStudentFilter(source) {
+  const filter = reactive({ course: '', year_level: '', section: '' })
+  const inCourse = computed(() => filter.course
+    ? source.value.filter(student => student.course === filter.course)
+    : source.value)
+  const inYear = computed(() => filter.year_level
+    ? inCourse.value.filter(student => String(student.year_level) === String(filter.year_level))
+    : inCourse.value)
+  const view = reactive({
+    filter,
+    courses: computed(() => uniqueSorted(source.value.map(student => student.course))),
+    yearLevels: computed(() => uniqueSorted(inCourse.value.map(student => student.year_level))),
+    sections: computed(() => {
+      const options = uniqueSorted(inYear.value.map(student => student.section)).map(name => ({ value: name, label: name }))
+      if (inYear.value.some(student => !student.section)) options.push({ value: NO_SECTION, label: 'No section' })
+      return options
+    }),
+    students: computed(() => {
+      if (!filter.section) return inYear.value
+      if (filter.section === NO_SECTION) return inYear.value.filter(student => !student.section)
+      return inYear.value.filter(student => student.section === filter.section)
+    }),
+    active: computed(() => Boolean(filter.course || filter.year_level || filter.section))
+  })
+  // A choice that no longer fits the filters before it goes back to "All".
+  watch(() => view.yearLevels, years => {
+    if (filter.year_level && !years.some(year => String(year) === String(filter.year_level))) filter.year_level = ''
+  })
+  watch(() => view.sections, options => {
+    if (filter.section && !options.some(option => option.value === filter.section)) filter.section = ''
+  })
+  return view
+}
+
+const adjustmentPicker = createStudentFilter(students)
+watch(() => adjustmentPicker.students, list => {
+  if (adjustmentForm.student_id && !list.some(student => student.id === adjustmentForm.student_id)) {
+    adjustmentForm.student_id = ''
+    selectedProgress.value = null
+  }
+})
+
+// The history table filters by the students who have adjustments, taken from the rows.
+const adjustedStudents = computed(() => {
+  const byId = new Map()
+  for (const row of adjustments.value) {
+    if (byId.has(row.student_id)) continue
+    byId.set(row.student_id, {
+      id: row.student_id,
+      full_name: row.student_name,
+      student_id: row.student_number,
+      course: row.course,
+      year_level: row.year_level,
+      section: row.section
+    })
+  }
+  return [...byId.values()].sort((a, b) => byNaturalOrder(a.full_name, b.full_name))
+})
+const historyPicker = createStudentFilter(adjustedStudents)
+const historyStudentId = ref('')
+const historySearch = ref('')
+const historyFiltered = computed(() => historyPicker.active || Boolean(historyStudentId.value) || Boolean(historySearch.value.trim()))
+const filteredAdjustments = computed(() => {
+  let rows = adjustments.value
+  if (historyStudentId.value) rows = rows.filter(row => row.student_id === historyStudentId.value)
+  else if (historyPicker.active) {
+    const ids = new Set(historyPicker.students.map(student => student.id))
+    rows = rows.filter(row => ids.has(row.student_id))
+  }
+  const term = historySearch.value.trim().toLowerCase()
+  if (term) {
+    rows = rows.filter(row => [row.student_name, row.student_number, row.reason]
+      .some(value => String(value || '').toLowerCase().includes(term)))
+  }
+  return rows
+})
+
+// The history table shows historyPageSize rows at a time. Changing the search, a filter
+// or the page size goes back to the first page.
+const HISTORY_PAGE_SIZES = [10, 25, 50, 100]
+const historyPageSize = ref(HISTORY_PAGE_SIZES[0])
+const historyPage = ref(1)
+const historyPageCount = computed(() => Math.max(1, Math.ceil(filteredAdjustments.value.length / historyPageSize.value)))
+const pagedAdjustments = computed(() => {
+  const start = (historyPage.value - 1) * historyPageSize.value
+  return filteredAdjustments.value.slice(start, start + historyPageSize.value)
+})
+const historyRange = computed(() => {
+  const total = filteredAdjustments.value.length
+  return {
+    start: total ? (historyPage.value - 1) * historyPageSize.value + 1 : 0,
+    end: Math.min(total, historyPage.value * historyPageSize.value),
+    total
+  }
+})
+watch(
+  () => [historyPicker.filter.course, historyPicker.filter.year_level, historyPicker.filter.section, historyStudentId.value, historySearch.value, historyPageSize.value],
+  () => { historyPage.value = 1 }
+)
+watch(historyPageCount, count => {
+  if (historyPage.value > count) historyPage.value = count
+})
+watch(() => historyPicker.students, list => {
+  if (historyStudentId.value && !list.some(student => student.id === historyStudentId.value)) historyStudentId.value = ''
+})
+
+function clearHistoryFilters() {
+  Object.assign(historyPicker.filter, { course: '', year_level: '', section: '' })
+  historyStudentId.value = ''
+  historySearch.value = ''
+}
+
+function studentPlacement(row) {
+  return [row.course, row.year_level ? `Year ${row.year_level}` : '', row.section].filter(Boolean).join(' · ') || 'No course or section'
+}
+
+const StatusFilter = defineComponent({
+  props: { modelValue: { type: String, default: '' }, options: { type: Array, required: true } },
+  emits: ['update:modelValue'],
+  setup(props, { emit }) {
+    return () => h('div', { class: 'segmented', role: 'group', 'aria-label': 'Filter by status' },
+      props.options.map(option => h('button', {
+        type: 'button',
+        class: { active: props.modelValue === option.value },
+        'aria-pressed': props.modelValue === option.value,
+        onClick: () => { if (props.modelValue !== option.value) emit('update:modelValue', option.value) }
+      }, option.label))
+    )
+  }
+})
+
+const EmptyState = defineComponent({
+  props: { icon: { type: String, default: 'inbox' }, title: { type: String, required: true }, text: { type: String, default: '' } },
+  setup(props, { slots }) {
+    return () => h('div', { class: 'empty-state compact' }, [
+      h('span', { class: 'empty-state-icon' }, [h(AppIcon, { name: props.icon, size: 22 })]),
+      h('h4', props.title),
+      props.text ? h('p', props.text) : null,
+      slots.default ? slots.default() : null
+    ])
+  }
+})
+
+function errorText(error, fallback) {
+  return error instanceof Error ? error.message : fallback
+}
 
 async function request(path, options = {}) {
   const headers = new Headers(options.headers || {})
@@ -220,22 +1069,12 @@ async function request(path, options = {}) {
 }
 
 function authenticate() {
-  const value = localStorage.getItem('rss_token') || sessionStorage.getItem('rss_token')
-  const rawUser = localStorage.getItem('rss_user') || sessionStorage.getItem('rss_user')
-  if (!value || !rawUser) {
+  const session = readSession('admin')
+  if (!session) {
     router.replace('/login')
     return false
   }
-  try {
-    if (JSON.parse(rawUser)?.role !== 'admin') {
-      router.replace('/login')
-      return false
-    }
-  } catch {
-    router.replace('/login')
-    return false
-  }
-  token.value = value
+  token.value = session.token
   return true
 }
 
@@ -245,22 +1084,45 @@ async function loadTab() {
   loading.value = true
   try {
     if (activeTab.value === 'attendance') await loadAttendance()
-    else if (activeTab.value === 'activities') await Promise.all([loadActivities(), loadRegistrations(), loadAreas()])
-    else if (activeTab.value === 'assignments') await Promise.all([loadAssignments(), loadStudents(), loadAreas()])
+    else if (activeTab.value === 'activities') await Promise.all([loadActivities(), loadRegistrations(), loadAreas(), loadActivityAttendance()])
+    else if (activeTab.value === 'areas') await loadAllAreas()
     else if (activeTab.value === 'hours') {
-      await loadStudents()
-      if (adjustmentForm.student_id) await loadAdjustments()
+      await Promise.all([loadStudents(), loadAdjustmentHistory()])
+      if (adjustmentForm.student_id) await loadSelectedProgress()
     } else if (activeTab.value === 'documents') await loadDocuments()
     else if (activeTab.value === 'announcements') await Promise.all([loadAnnouncements(), loadSections()])
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : 'Failed to load this admin module.'
+    errorMessage.value = errorText(error, 'Failed to load this admin module.')
   } finally {
     loading.value = false
   }
 }
 
+async function runFilter(loader) {
+  try {
+    await loader()
+  } catch (error) {
+    toast.error(errorText(error, 'The list could not be updated.'))
+  }
+}
+
 function selectTab(tab) {
   router.push(`/admin/workflows/${tab}`)
+}
+
+function reviewPrompt({ approve, noun, subject, details, noteHint }) {
+  return confirm({
+    title: `${approve ? 'Approve' : 'Reject'} ${noun}`,
+    message: subject,
+    details,
+    confirmLabel: approve ? 'Approve' : 'Reject',
+    tone: approve ? 'primary' : 'danger',
+    note: {
+      label: approve ? 'Note to the student' : 'Reason',
+      placeholder: approve ? 'Add an optional note' : 'Explain what needs to change',
+      hint: noteHint
+    }
+  })
 }
 
 async function loadAttendance() {
@@ -269,20 +1131,24 @@ async function loadAttendance() {
 }
 
 async function reviewAttendance(record, decision) {
-  const reason = decision === 'reject'
-    ? window.prompt('Enter a reason for rejecting this attendance record:')
-    : window.prompt('Optional note for this attendance review:') || ''
-  if (decision === 'reject' && reason === null) return
-  if (!window.confirm(`${decision === 'approve' ? 'Approve' : 'Reject'} attendance for ${record.student_name} on ${dateLabel(record.attendance_date)}?`)) return
+  const approve = decision === 'approve'
+  const { confirmed, note } = await reviewPrompt({
+    approve,
+    noun: 'attendance',
+    subject: `${approve ? 'Approve' : 'Reject'} ${hours(record.total_hours)} hours for ${record.student_name} on ${dateLabel(record.attendance_date)}?`,
+    details: approve ? "The hours will count toward the student's progress." : 'The student can submit this date again.',
+    noteHint: 'Included in the notification sent to the student.'
+  })
+  if (!confirmed) return
   saving.value = true
   try {
     const data = await request(`/admin/attendance/${encodeURIComponent(record.id)}/${decision}`, {
-      method: 'PATCH', body: JSON.stringify({ reason: reason || '' })
+      method: 'PATCH', body: JSON.stringify({ reason: note || '' })
     })
-    successMessage.value = data.message
+    toast.success(data.message)
     await loadAttendance()
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : 'Attendance review failed.'
+    toast.error(errorText(error, 'Attendance review failed.'))
   } finally { saving.value = false }
 }
 
@@ -290,8 +1156,56 @@ async function loadAreas() {
   areas.value = (await request('/admin/activity-areas')).areas
 }
 
+async function loadAllAreas() {
+  allAreas.value = (await request('/admin/service-areas')).areas
+}
+
+function resetAreaForm() {
+  Object.assign(areaForm, { id: '', area_name: '', location: '', description: '', status: 'active' })
+}
+
+function openAreaForm(area) {
+  if (area) {
+    Object.assign(areaForm, {
+      id: area.id,
+      area_name: area.area_name,
+      location: area.location || '',
+      description: area.description || '',
+      status: area.status === 'inactive' ? 'inactive' : 'active'
+    })
+  } else {
+    resetAreaForm()
+  }
+  areaModalOpen.value = true
+}
+
+function closeAreaForm() {
+  if (saving.value) return
+  areaModalOpen.value = false
+}
+
+async function saveArea() {
+  saving.value = true
+  try {
+    const { id, ...fields } = areaForm
+    const path = id ? `/admin/service-areas/${encodeURIComponent(id)}` : '/admin/service-areas'
+    const result = await request(path, { method: id ? 'PATCH' : 'POST', body: JSON.stringify(fields) })
+    toast.success(result.message)
+    areaModalOpen.value = false
+    resetAreaForm()
+    await loadAllAreas()
+  } catch (error) {
+    toast.error(errorText(error, 'Service area could not be saved.'))
+  } finally { saving.value = false }
+}
+
 async function loadActivities() {
   activities.value = (await request('/admin/activities')).activities
+}
+
+// Every attendance record, for the service history.
+async function loadActivityAttendance() {
+  activityAttendance.value = (await request('/admin/attendance')).attendance
 }
 
 async function loadRegistrations() {
@@ -300,18 +1214,23 @@ async function loadRegistrations() {
 }
 
 async function reviewRegistration(registration, decision) {
-  const reason = decision === 'reject' ? window.prompt('Optional rejection reason:') : ''
-  if (decision === 'reject' && reason === null) return
-  if (!window.confirm(`${decision === 'approve' ? 'Approve' : 'Reject'} ${registration.student_name}'s registration for "${registration.activity_title}"?`)) return
+  const approve = decision === 'approve'
+  const { confirmed, note } = await reviewPrompt({
+    approve,
+    noun: 'registration',
+    subject: `${approve ? 'Approve' : 'Reject'} ${registration.student_name}'s registration for "${registration.activity_title}"?`,
+    noteHint: approve ? 'Saved with the review.' : 'Included in the notification sent to the student.'
+  })
+  if (!confirmed) return
   saving.value = true
   try {
     const data = await request(`/admin/activity-registrations/${encodeURIComponent(registration.id)}/${decision}`, {
-      method: 'PATCH', body: JSON.stringify({ reason: reason || '' })
+      method: 'PATCH', body: JSON.stringify({ reason: note || '' })
     })
-    successMessage.value = data.message
+    toast.success(data.message)
     await loadRegistrations()
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : 'Registration review failed.'
+    toast.error(errorText(error, 'Registration review failed.'))
   } finally { saving.value = false }
 }
 
@@ -323,27 +1242,41 @@ function resetActivityForm() {
   })
 }
 
-function editActivity(activity) {
-  Object.assign(activityForm, {
-    id: activity.id,
-    title: activity.title,
-    area_id: activity.area_id,
-    description: activity.description,
-    location: activity.location || '',
-    scheduled_start: String(activity.scheduled_start).slice(0, 16),
-    scheduled_end: String(activity.scheduled_end).slice(0, 16),
-    required_hours: Number(activity.required_hours),
-    capacity: activity.capacity === null ? '' : Number(activity.capacity),
-    eligibility: activity.eligibility || '',
-    registration_open: Boolean(Number(activity.registration_open)),
-    status: activity.status
-  })
-  window.scrollTo({ top: 0, behavior: 'smooth' })
+function openActivityForm(activity) {
+  if (activity) {
+    Object.assign(activityForm, {
+      id: activity.id,
+      title: activity.title,
+      area_id: activity.area_id,
+      description: activity.description,
+      location: activity.location || '',
+      scheduled_start: String(activity.scheduled_start).slice(0, 16),
+      scheduled_end: String(activity.scheduled_end).slice(0, 16),
+      required_hours: Number(activity.required_hours),
+      capacity: activity.capacity === null ? '' : Number(activity.capacity),
+      eligibility: activity.eligibility || '',
+      registration_open: Boolean(Number(activity.registration_open)),
+      status: activity.status
+    })
+  } else {
+    resetActivityForm()
+  }
+  activityModalOpen.value = true
+}
+
+function closeActivityForm() {
+  if (saving.value) return
+  activityModalOpen.value = false
 }
 
 async function saveActivity() {
+  const start = parseApiDate(activityForm.scheduled_start)
+  const end = parseApiDate(activityForm.scheduled_end)
+  if (start && end && end <= start) {
+    toast.error('The end time must be after the start time.')
+    return
+  }
   saving.value = true
-  errorMessage.value = ''
   try {
     const { id, ...fields } = activityForm
     const payload = {
@@ -354,75 +1287,109 @@ async function saveActivity() {
     const isEdit = Boolean(id)
     const path = isEdit ? `/admin/activities/${encodeURIComponent(id)}` : '/admin/activities'
     const result = await request(path, { method: isEdit ? 'PATCH' : 'POST', body: JSON.stringify(payload) })
-    successMessage.value = result.message
+    toast.success(result.message)
+    activityModalOpen.value = false
     resetActivityForm()
     await Promise.all([loadActivities(), loadRegistrations()])
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : 'Activity could not be saved.'
+    toast.error(errorText(error, 'Activity could not be saved.'))
   } finally { saving.value = false }
 }
 
 async function deleteActivity(activity) {
-  if (!window.confirm(`Delete draft activity "${activity.title}"?`)) return
+  const { confirmed } = await confirm({
+    title: 'Delete draft activity?',
+    message: `"${activity.title}" will be permanently deleted.`,
+    confirmLabel: 'Delete',
+    tone: 'danger'
+  })
+  if (!confirmed) return
   try {
     const result = await request(`/admin/activities/${encodeURIComponent(activity.id)}`, { method: 'DELETE' })
-    successMessage.value = result.message
+    toast.success(result.message)
     await loadActivities()
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : 'Activity could not be deleted.'
+    toast.error(errorText(error, 'Activity could not be deleted.'))
   }
+}
+
+// A published activity is "Done" once its end time passes; the server then notifies
+// its registered students to log their time.
+function isDone(activity) {
+  return activity.status === 'published' && registrationState(activity).tone === 'ended'
+}
+
+function canArchive(activity) {
+  return activity.status === 'cancelled' || registrationState(activity).tone === 'ended'
+}
+
+async function archiveActivity(activity) {
+  const { confirmed } = await confirm({
+    title: 'Archive this activity?',
+    message: `"${activity.title}" will move to Completed activities and be hidden from students.`,
+    details: 'Its student list and logged hours are kept. You can restore it later.',
+    confirmLabel: 'Archive',
+    tone: 'primary'
+  })
+  if (!confirmed) return
+  await setArchived(activity, 'archive', 'Activity could not be archived.')
+}
+
+async function restoreActivity(activity) {
+  await setArchived(activity, 'restore', 'Activity could not be restored.')
+}
+
+async function setArchived(activity, action, fallback) {
+  saving.value = true
+  try {
+    const result = await request(`/admin/activities/${encodeURIComponent(activity.id)}/${action}`, { method: 'PATCH' })
+    toast.success(result.message)
+    await loadActivities()
+  } catch (error) {
+    toast.error(errorText(error, fallback))
+  } finally { saving.value = false }
+}
+
+async function openParticipants(activity) {
+  Object.assign(participants, { open: true, loading: true, activity, rows: [] })
+  try {
+    const data = await request(`/admin/activities/${encodeURIComponent(activity.id)}/participants`)
+    // Ignore a slow response for an activity the admin has already closed or switched away from.
+    if (participants.activity?.id === activity.id) participants.rows = data.participants
+  } catch (error) {
+    toast.error(errorText(error, 'Students could not be loaded.'))
+    if (participants.activity?.id === activity.id) participants.open = false
+  } finally {
+    if (participants.activity?.id === activity.id) participants.loading = false
+  }
+}
+
+function closeParticipants() {
+  participants.open = false
 }
 
 async function loadStudents() {
   students.value = (await request('/admin/students')).students
 }
 
-async function loadAssignments() {
-  assignments.value = (await request('/admin/assignments')).assignments
+async function loadAdjustmentHistory() {
+  adjustments.value = (await request('/admin/hour-adjustments')).adjustments
 }
 
-async function createAssignment() {
-  saving.value = true
-  errorMessage.value = ''
-  try {
-    const result = await request('/admin/assignments', {
-      method: 'POST',
-      body: JSON.stringify({
-        ...assignmentForm,
-        schedule_start: assignmentForm.schedule_start || null,
-        schedule_end: assignmentForm.schedule_end || null
-      })
-    })
-    successMessage.value = result.message
-    Object.assign(assignmentForm, { student_id: '', area_id: '', assigned_date: '', schedule_start: '', schedule_end: '' })
-    await loadAssignments()
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : 'Assignment could not be created.'
-  } finally { saving.value = false }
-}
-
-async function removeAssignment(assignment) {
-  if (!window.confirm(`Remove ${assignment.area_name} assignment for ${assignment.student_name}?`)) return
-  try {
-    const result = await request(`/admin/assignments/${encodeURIComponent(assignment.id)}`, { method: 'DELETE' })
-    successMessage.value = result.message
-    await loadAssignments()
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : 'Assignment could not be removed.'
-  }
-}
-
-async function loadAdjustments() {
-  if (!adjustmentForm.student_id) {
-    adjustments.value = []
+async function loadSelectedProgress() {
+  const id = adjustmentForm.student_id
+  if (!id) {
+    selectedProgress.value = null
     return
   }
-  adjustments.value = (await request(`/admin/students/${encodeURIComponent(adjustmentForm.student_id)}/hour-adjustments`)).adjustments
+  // The progress summary is a convenience; the form still works without it.
+  const detail = await request(`/admin/students/${encodeURIComponent(id)}`).catch(() => null)
+  // Ignore a late reply if a different student was picked meanwhile.
+  if (adjustmentForm.student_id === id) selectedProgress.value = detail?.progress || null
 }
 
 async function createAdjustment() {
   saving.value = true
-  errorMessage.value = ''
   try {
     const result = await request(`/admin/students/${encodeURIComponent(adjustmentForm.student_id)}/hour-adjustments`, {
       method: 'POST',
@@ -432,12 +1399,13 @@ async function createAdjustment() {
         reason: adjustmentForm.reason
       })
     })
-    successMessage.value = result.message
+    toast.success(result.message)
     adjustmentForm.adjustment_amount = ''
     adjustmentForm.reason = ''
-    await loadAdjustments()
+    await Promise.all([loadAdjustmentHistory(), loadSelectedProgress()])
+    historyPage.value = 1 // the new adjustment is the newest row, on the first page
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : 'Adjustment could not be saved.'
+    toast.error(errorText(error, 'Adjustment could not be saved.'))
   } finally { saving.value = false }
 }
 
@@ -456,23 +1424,29 @@ async function downloadDocument(document) {
     link.click()
     setTimeout(() => URL.revokeObjectURL(url), 1000)
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : 'Document file could not be opened.'
+    toast.error(errorText(error, 'Document file could not be opened.'))
   }
 }
 
 async function reviewDocument(document, decision) {
-  const reason = decision === 'reject' ? window.prompt('Enter a reason for rejecting this document:') : window.prompt('Optional review note:') || ''
-  if (decision === 'reject' && reason === null) return
-  if (!window.confirm(`${decision === 'approve' ? 'Approve' : 'Reject'} "${document.document_name}" for ${document.student_name}?`)) return
+  const approve = decision === 'approve'
+  const { confirmed, note } = await reviewPrompt({
+    approve,
+    noun: 'document',
+    subject: `${approve ? 'Approve' : 'Reject'} "${document.document_name}" from ${document.student_name}?`,
+    details: approve ? '' : 'The student can upload a replacement.',
+    noteHint: 'Shown to the student next to the document.'
+  })
+  if (!confirmed) return
   saving.value = true
   try {
     const result = await request(`/admin/documents/${encodeURIComponent(document.id)}/${decision}`, {
-      method: 'PATCH', body: JSON.stringify({ reason: reason || '' })
+      method: 'PATCH', body: JSON.stringify({ reason: note || '' })
     })
-    successMessage.value = result.message
+    toast.success(result.message)
     await loadDocuments()
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : 'Document review failed.'
+    toast.error(errorText(error, 'Document review failed.'))
   } finally { saving.value = false }
 }
 
@@ -484,23 +1458,31 @@ async function loadSections() {
   sections.value = (await request('/admin/sections')).sections
 }
 
-function editAnnouncement(announcement) {
-  Object.assign(announcementForm, {
-    id: announcement.id,
-    title: announcement.title,
-    content: announcement.content,
-    target_section_id: announcement.target_section_id || ''
-  })
-  window.scrollTo({ top: 0, behavior: 'smooth' })
-}
-
 function resetAnnouncementForm() {
   Object.assign(announcementForm, { id: '', title: '', content: '', target_section_id: '' })
 }
 
+function openAnnouncementForm(announcement) {
+  if (announcement) {
+    Object.assign(announcementForm, {
+      id: announcement.id,
+      title: announcement.title,
+      content: announcement.content,
+      target_section_id: announcement.target_section_id || ''
+    })
+  } else {
+    resetAnnouncementForm()
+  }
+  announcementModalOpen.value = true
+}
+
+function closeAnnouncementForm() {
+  if (saving.value) return
+  announcementModalOpen.value = false
+}
+
 async function saveAnnouncement() {
   saving.value = true
-  errorMessage.value = ''
   try {
     const isEdit = Boolean(announcementForm.id)
     const path = isEdit ? `/admin/announcements/${encodeURIComponent(announcementForm.id)}` : '/admin/announcements'
@@ -512,40 +1494,36 @@ async function saveAnnouncement() {
         target_section_id: announcementForm.target_section_id || null
       })
     })
-    successMessage.value = result.message
+    toast.success(result.message)
+    announcementModalOpen.value = false
     resetAnnouncementForm()
     await loadAnnouncements()
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : 'Announcement could not be saved.'
+    toast.error(errorText(error, 'Announcement could not be saved.'))
   } finally { saving.value = false }
 }
 
 async function deleteAnnouncement(announcement) {
-  if (!window.confirm(`Delete announcement "${announcement.title}"?`)) return
+  const { confirmed } = await confirm({
+    title: 'Delete announcement?',
+    message: `"${announcement.title}" will be removed for all students.`,
+    confirmLabel: 'Delete',
+    tone: 'danger'
+  })
+  if (!confirmed) return
   try {
     const result = await request(`/admin/announcements/${encodeURIComponent(announcement.id)}`, { method: 'DELETE' })
-    successMessage.value = result.message
+    toast.success(result.message)
     await loadAnnouncements()
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : 'Announcement could not be deleted.'
+    toast.error(errorText(error, 'Announcement could not be deleted.'))
   }
 }
 
 function dateLabel(value) {
   if (!value) return '—'
-  const text = String(value)
-  const date = /^\d{4}-\d{2}-\d{2}$/.test(text) ? new Date(`${text}T00:00:00`) : new Date(text)
-  return Number.isNaN(date.getTime()) ? text : new Intl.DateTimeFormat('en-PH', { dateStyle: 'medium' }).format(date)
-}
-
-function dateTime(value) {
-  if (!value) return '—'
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat('en-PH', { dateStyle: 'medium', timeStyle: 'short' }).format(date)
-}
-
-function titleCase(value) {
-  return value ? String(value).replace(/_/g, ' ').replace(/\b\w/g, char => char.toUpperCase()) : '—'
+  const date = parseApiDate(value)
+  return date ? new Intl.DateTimeFormat('en-PH', { dateStyle: 'medium' }).format(date) : String(value)
 }
 
 function hours(value) {
@@ -553,101 +1531,101 @@ function hours(value) {
   return Number.isFinite(number) ? Number(number.toFixed(2)).toString() : '0'
 }
 
-function logout() {
-  localStorage.removeItem('rss_token')
-  localStorage.removeItem('rss_user')
-  sessionStorage.removeItem('rss_token')
-  sessionStorage.removeItem('rss_user')
-  router.replace('/login')
+const weekdayFormat = new Intl.DateTimeFormat('en-PH', { weekday: 'long' })
+function weekdayLabel(value) {
+  const date = parseApiDate(value)
+  return date ? weekdayFormat.format(date) : ''
+}
+
+function activityPlace(activity) {
+  return [activity.service_area, activity.location].filter(Boolean).join(' · ')
+}
+
+// The clock times of an activity's schedule ('YYYY-MM-DDTHH:MM' wall-clock values).
+function activityTimes(activity) {
+  return formatTimeRange(String(activity.scheduled_start || '').slice(11, 16), String(activity.scheduled_end || '').slice(11, 16))
+}
+
+// Ticks every 30s so an activity flips to "In progress" / "Ended" without a page reload.
+const now = ref(Date.now())
+let clockTimer = null
+
+// Students can only register before the activity starts (the backend enforces this too),
+// so the schedule outranks the admin's "Students can register" switch.
+function registrationState(activity) {
+  const start = parseApiDate(activity.scheduled_start)
+  const end = parseApiDate(activity.scheduled_end)
+  if (end && end.getTime() <= now.value) return { label: 'Ended', tone: 'ended' }
+  if (start && start.getTime() <= now.value) return { label: 'In progress', tone: 'live' }
+  if (!Number(activity.registration_open)) return { label: 'Closed', tone: '' }
+  if (activity.capacity !== null && activity.capacity !== undefined &&
+      Number(activity.registration_count) >= Number(activity.capacity)) {
+    return { label: 'Full', tone: 'full' }
+  }
+  return { label: 'Open', tone: 'open' }
 }
 
 watch(activeTab, () => {
+  activityModalOpen.value = false
+  areaModalOpen.value = false
+  announcementModalOpen.value = false
+  participants.open = false
+  serviceDay.open = false
   if (token.value) loadTab()
 })
 onMounted(() => {
+  clockTimer = setInterval(() => { now.value = Date.now() }, 30000)
   if (authenticate()) loadTab()
+})
+onBeforeUnmount(() => {
+  clearInterval(clockTimer)
 })
 </script>
 
 <style scoped>
-* { box-sizing: border-box; }
-.admin-layout { min-height: 100vh; display: flex; background: #f5f7fb; color: #172033; font-family: Arial, Helvetica, sans-serif; }
-.sidebar { width: 255px; min-width: 255px; min-height: 100vh; display: flex; flex-direction: column; padding: 23px 16px; background: #101e38; color: #fff; }
-.brand, .admin-profile { display: flex; align-items: center; gap: 11px; }
-.brand { padding: 4px 5px 25px; border-bottom: 1px solid rgba(255,255,255,.1); }
-.brand-icon { width: 40px; height: 40px; display: grid; place-items: center; border-radius: 10px; background: #3478f6; font-size: 21px; font-weight: 800; }
-.brand h2 { margin: 0 0 4px; font-size: 13px; letter-spacing: .8px; }
-.brand span { color: #8fa7cb; font-size: 8px; letter-spacing: 1.4px; }
-.admin-profile { padding: 17px 4px; border-bottom: 1px solid rgba(255,255,255,.1); }
-.avatar { width: 35px; height: 35px; display: grid; place-items: center; border-radius: 50%; background: #29466f; font-weight: 700; }
-.admin-profile strong, .admin-profile small { display: block; }
-.admin-profile strong { font-size: 11px; }
-.admin-profile small { margin-top: 4px; color: #93a5c0; font-size: 9px; }
-.navigation { flex: 1; padding-top: 17px; overflow-y: auto; }
-.nav-label { margin: 15px 9px 8px; color: #7185a5; font-size: 9px; font-weight: 700; letter-spacing: 1.3px; }
-.nav-link { width: 100%; display: flex; align-items: center; gap: 11px; margin-bottom: 4px; padding: 11px; border: 0; border-radius: 7px; background: transparent; color: #b7c5da; text-align: left; font-size: 11px; cursor: pointer; }
-.nav-link span { width: 17px; text-align: center; font-size: 15px; }
-.nav-link:hover, .nav-link.active { background: #263f65; color: white; }
-.logout-button { margin-top: 14px; padding: 11px; border: 1px solid #3b4e6b; border-radius: 7px; background: transparent; color: #d3deed; text-align: left; font-size: 11px; cursor: pointer; }
-.main-content { min-width: 0; flex: 1; display: flex; flex-direction: column; padding: 24px 30px 16px; }
-.topbar { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 19px; }
-.eyebrow { margin: 0; color: #8792a4; font-size: 9px; letter-spacing: 1px; }
-.topbar h1 { margin: 5px 0; font-size: 21px; }
-.topbar p:last-child { margin: 0; color: #8792a4; font-size: 10px; }
-.page-content { width: 100%; max-width: 1500px; margin: 0 auto; }
-.intro { margin-bottom: 14px; }
-.intro h2 { margin: 0 0 6px; font-size: 16px; }
-.intro p, .section-header p { margin: 0; color: #8792a4; font-size: 10px; }
-.card { margin-bottom: 14px; padding: 17px; border: 1px solid #e8edf3; border-radius: 10px; background: #fff; box-shadow: 0 3px 12px rgba(20,40,70,.025); }
-.card h3 { margin: 0 0 13px; color: #2e3d53; font-size: 12px; }
-.form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 11px; align-items: end; }
-.form-grid > h3, .wide, .form-actions { grid-column: 1 / -1; }
-.form-grid label, .filter-row label { display: flex; flex-direction: column; gap: 5px; }
-.form-grid label > span, .filter-row label > span { color: #68778c; font-size: 9px; font-weight: 700; }
-.form-grid input, .form-grid select, .form-grid textarea, .filter-row select, .section-header select { width: 100%; min-height: 34px; padding: 7px 9px; border: 1px solid #dfe5ed; border-radius: 6px; outline: none; background: #fff; color: #334258; font: inherit; font-size: 10px; }
-.form-grid textarea { resize: vertical; }
-.form-grid input:focus, .form-grid select:focus, .form-grid textarea:focus, .filter-row select:focus { border-color: #3478f6; box-shadow: 0 0 0 3px rgba(52,120,246,.1); }
-.checkbox { flex-direction: row !important; align-items: center; gap: 7px !important; min-height: 34px; }
-.checkbox input { width: 15px; min-height: 15px; }
-.checkbox span { color: #52627a; font-size: 10px; }
-.form-actions { display: flex; gap: 8px; }
-.compact-form { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-.primary-button, .secondary-button, .small-button { min-height: 33px; padding: 7px 11px; border: 1px solid transparent; border-radius: 6px; font-size: 9px; font-weight: 700; cursor: pointer; }
-.primary-button { background: #3478f6; color: #fff; }
-.secondary-button { border-color: #dfe5ed; background: #fff; color: #40536f; }
-.small-button { min-height: 27px; padding: 5px 7px; }
-.approve { background: #e6f7ed; color: #18764d; }
-.reject { background: #ffeded; color: #b34141; }
-button:disabled { cursor: not-allowed; opacity: .6; }
-.filter-row { margin-bottom: 12px; }
-.filter-row label { max-width: 220px; }
-.section-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-.section-header h3 { margin: 0 0 5px; }
-.section-header select { width: auto; min-width: 130px; }
-.table-wrap { width: 100%; overflow-x: auto; border: 1px solid #edf0f5; border-radius: 8px; background: #fff; }
-.card.table-wrap { padding: 0; }
-table { width: 100%; border-collapse: collapse; text-align: left; }
-th { padding: 10px 9px; background: #f8fafd; color: #748299; font-size: 9px; white-space: nowrap; }
-td { padding: 10px 9px; border-top: 1px solid #edf0f5; color: #526177; font-size: 9px; vertical-align: top; }
-.actions { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
-.text-button, .danger-text { padding: 3px; border: 0; background: transparent; color: #3478f6; font-size: 9px; font-weight: 700; cursor: pointer; }
-.danger-text { color: #b34141; }
-.badge { display: inline-flex; padding: 4px 7px; border-radius: 20px; font-size: 8px; font-weight: 700; }
-.status-pending { background: #fff4e5; color: #a9680c; }
-.status-approved { background: #e8f8ef; color: #18764d; }
-.status-rejected { background: #ffeded; color: #b34141; }
-.status-cancelled { background: #eef1f5; color: #677386; }
-.empty { padding: 25px; color: #8994a4; text-align: center; }
-.note { margin: 10px 0 0; color: #8792a4; font-size: 9px; line-height: 1.5; }
-.notice { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin: 0 0 12px; padding: 10px 12px; border-radius: 7px; font-size: 10px; }
-.notice button { border: 0; background: transparent; color: inherit; font-size: 16px; cursor: pointer; }
-.notice.error { background: #fff1f1; color: #a83b3b; }
-.notice.success { background: #effaf4; color: #18764d; }
-.loading { min-height: 220px; display: flex; align-items: center; justify-content: center; gap: 10px; color: #778398; font-size: 10px; }
-.spinner { width: 20px; height: 20px; border: 3px solid #dce7f8; border-top-color: #3478f6; border-radius: 50%; animation: spin .8s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-.footer { margin-top: auto; padding: 20px 0 3px; color: #9aa4b3; font-size: 9px; text-align: center; }
-@media (max-width: 1050px) { .sidebar { width: 220px; min-width: 220px; } .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .compact-form { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 700px) { .admin-layout { display: block; } .sidebar { width: 100%; min-width: 0; min-height: auto; padding: 12px; } .admin-profile, .logout-button { display: none; } .brand { padding-bottom: 12px; } .navigation { display: flex; gap: 3px; overflow-x: auto; padding-top: 10px; } .nav-label { display: none; } .nav-link { flex: 0 0 auto; width: auto; white-space: nowrap; } .main-content { padding: 17px 13px; } }
-@media (max-width: 470px) { .form-grid, .compact-form { grid-template-columns: 1fr; } .topbar { align-items: flex-start; } .section-header { align-items: flex-start; flex-direction: column; } }
+.page-alert { margin-bottom: 20px; align-items: center; }
+.alert-info, .alert { align-items: center; }
+.card-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding-top: 16px; padding-bottom: 16px; }
+.count { font-size: 13px; }
+.spaced { margin-top: 14px; }
+.page-size { display: inline-flex; align-items: center; gap: 8px; }
+.page-size select { width: auto; min-height: 32px; padding: 4px 8px; font-size: 13px; }
+.remark { margin-top: 6px !important; max-width: 260px; line-height: 1.45; }
+.list-icon { display: grid; place-items: center; width: 38px; height: 38px; flex: 0 0 auto; border-radius: 10px; }
+.file-icon { display: grid; place-items: center; width: 36px; height: 36px; flex: 0 0 auto; border-radius: 9px; background: var(--primary-soft); color: var(--primary-text); }
+.doc-name { display: block; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.schedule-cell { min-width: 180px; font-size: 13px; }
+.photo-pair { display: flex; gap: 8px; }
+.history-toolbar { display: flex; align-items: center; gap: 10px; flex: 1 1 420px; flex-wrap: wrap; }
+.history-search { flex: 1 1 240px; max-width: 420px; }
+.history-month { width: auto; min-width: 170px; }
+.date-tile-sm { width: 42px; height: 46px; }
+.date-tile-sm strong { font-size: 16px; }
+.photo-count { display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); font-weight: 600; }
+.photo-count svg { color: var(--text-4); }
+.status-cell { min-width: 120px; }
+.status-cell .badge { white-space: nowrap; }
+.reg-state { display: inline-flex; align-items: center; gap: 6px; color: var(--text-3); font-weight: 600; }
+.reg-state::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--text-4); }
+.reg-state.open { color: var(--success); }
+.reg-state.open::before { background: var(--success-solid); }
+.reg-state.live { color: var(--primary-text); }
+.reg-state.live::before { background: var(--primary); }
+.reg-state.full { color: var(--warning); }
+.reg-state.full::before { background: var(--warning-solid); }
+.delta { font-weight: 700; font-variant-numeric: tabular-nums; }
+.delta.plus { color: var(--success); }
+.delta.minus { color: var(--danger); }
+.form-actions-top { margin-top: 18px; }
+.field-submit { justify-content: flex-end; padding-top: 25px; }
+.type-toggle { display: flex; width: 100%; }
+.type-toggle button { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; }
+.progress-strip { padding: 12px 14px; border: 1px solid var(--primary-soft-2); border-radius: var(--radius); background: var(--primary-soft); }
+.progress-strip-copy { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; color: var(--text-2); font-size: 13px; }
+.progress-strip-copy strong { color: var(--text); font-size: 15px; }
+.progress-strip .progress { background: #fff; }
+
+@media (max-width: 1100px) {
+  .field-submit { padding-top: 0; }
+}
 </style>

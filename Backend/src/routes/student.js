@@ -11,6 +11,21 @@ const {
   resolveDocumentPath,
   getDocumentMimeType
 } = require('../document-storage')
+const { todayInAppZone, nowInAppZone } = require('../app-time')
+const {
+  PHOTO_KINDS,
+  handleAttendancePhotos,
+  hasImageSignature,
+  photoFile,
+  sendAttendancePhoto
+} = require('../attendance-photos')
+const {
+  handleProfilePhotoUpload,
+  isMissingProfilePhotoColumn,
+  keepUploadedProfilePhoto,
+  removeStoredProfilePhoto,
+  sendProfilePhoto
+} = require('../profile-photos')
 
 const router = express.Router()
 const requiredHours = 340
@@ -67,7 +82,13 @@ const activitySelect = `
     r.status AS registration_status,
     COALESCE(registrations.active_count, 0) AS registration_count,
     COALESCE(completed.hours, 0) AS completed_hours,
-    CASE WHEN completed.activity_id IS NULL THEN 0 ELSE 1 END AS is_completed
+    CASE WHEN completed.activity_id IS NULL THEN 0 ELSE 1 END AS is_completed,
+    CASE WHEN EXISTS (
+      SELECT 1 FROM attendance t
+      WHERE t.activity_id = a.id
+        AND t.student_id = r.student_id
+        AND t.status IN ('pending', 'approved')
+    ) THEN 1 ELSE 0 END AS has_attendance
   FROM service_activities a
   JOIN service_areas s ON s.id = a.area_id
   LEFT JOIN activity_registrations r
@@ -264,11 +285,11 @@ router.get('/dashboard', async (req, res) => {
             FROM service_assignments a
             JOIN service_areas s ON s.id = a.area_id
             WHERE a.student_id = ?
-              AND date(a.assigned_date) >= date('now')
+              AND date(a.assigned_date) >= ?
             ORDER BY a.assigned_date, a.schedule_start
             LIMIT 5
           `,
-          args: [studentId]
+          args: [studentId, todayInAppZone()]
         }),
         db.execute({
           sql: `
@@ -339,9 +360,10 @@ router.get('/activities', async (req, res) => {
 
   const conditions = [
     "(a.status = 'published' OR r.id IS NOT NULL)",
-    "(date(a.scheduled_end) >= date('now') OR r.id IS NOT NULL)"
+    '(date(a.scheduled_end) >= ? OR r.id IS NOT NULL)',
+    '(a.archived_at IS NULL OR r.id IS NOT NULL)'
   ]
-  const args = [req.student.id, req.student.id]
+  const args = [req.student.id, req.student.id, todayInAppZone()]
   if (search) {
     conditions.push('(a.title LIKE ? OR a.description LIKE ? OR a.location LIKE ? OR s.area_name LIKE ?)')
     args.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`)
@@ -408,9 +430,9 @@ router.post('/activities/:id/register', async (req, res) => {
         WHERE id = ?
           AND status = 'published'
           AND registration_open = 1
-          AND datetime(scheduled_start) > datetime('now')
+          AND datetime(scheduled_start) > datetime(?)
       `,
-      args: [activityId]
+      args: [activityId, nowInAppZone()]
     })
 
     if (activity.rows.length === 0) {
@@ -586,7 +608,9 @@ router.get('/attendance', async (req, res) => {
         sql: `
           SELECT a.id, a.attendance_date, a.time_in, a.time_out, a.total_hours,
             a.status, a.admin_remarks, a.created_at, a.activity_id,
-            s.title AS activity_title
+            s.title AS activity_title,
+            CASE WHEN a.before_photo_path IS NULL THEN 0 ELSE 1 END AS has_before_photo,
+            CASE WHEN a.after_photo_path IS NULL THEN 0 ELSE 1 END AS has_after_photo
           FROM attendance a
           LEFT JOIN service_activities s ON s.id = a.activity_id
           WHERE ${conditions.join(' AND ')}
@@ -618,7 +642,9 @@ router.get('/attendance', async (req, res) => {
   }
 })
 
-router.post('/attendance', async (req, res) => {
+// Sent as JSON, or as multipart form data when before_photo / after_photo are attached.
+// Attendance for an activity must include both photos; general service may include them.
+router.post('/attendance', handleAttendancePhotos, async (req, res) => {
   const body = req.body || {}
   const attendanceDate = body.attendance_date
   const timeIn = body.time_in
@@ -633,7 +659,7 @@ router.post('/attendance', async (req, res) => {
       message: 'Attendance date must be a valid YYYY-MM-DD date.'
     })
   }
-  if (attendanceDate > new Date().toISOString().slice(0, 10)) {
+  if (attendanceDate > todayInAppZone()) {
     return res.status(400).json({
       success: false,
       message: 'Future attendance dates are not allowed.'
@@ -658,6 +684,31 @@ router.post('/attendance', async (req, res) => {
     return res.status(400).json({
       success: false,
       message: 'Time out must be later than time in on the same day.'
+    })
+  }
+
+  const beforePhoto = photoFile(req, 'before')
+  const afterPhoto = photoFile(req, 'after')
+  if (activityId && (!beforePhoto || !afterPhoto)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Activity attendance needs a before photo and an after photo.'
+    })
+  }
+  try {
+    for (const photo of [beforePhoto, afterPhoto].filter(Boolean)) {
+      if (!(await hasImageSignature(photo))) {
+        return res.status(400).json({
+          success: false,
+          message: 'A photo is not a valid JPEG, PNG, or WebP image.'
+        })
+      }
+    }
+  } catch (error) {
+    console.error('Attendance photo check error:', error)
+    return res.status(500).json({
+      success: false,
+      message: 'The uploaded photos could not be checked.'
     })
   }
 
@@ -688,17 +739,34 @@ router.post('/attendance', async (req, res) => {
       }
     }
 
-    const existing = await transaction.execute({
-      sql: 'SELECT id FROM attendance WHERE student_id = ? AND attendance_date = ? LIMIT 1',
-      args: [req.student.id, attendanceDate]
+    // A student can log several records on one date (general service in the morning,
+    // an activity at night) as long as their times don't overlap, so no hour is counted
+    // twice. HH:MM strings compare in time order. A rejected record never blocks.
+    const overlapping = await transaction.execute({
+      sql: `
+        SELECT t.time_in, t.time_out, s.title AS activity_title
+        FROM attendance t
+        LEFT JOIN service_activities s ON s.id = t.activity_id
+        WHERE t.student_id = ?
+          AND t.attendance_date = ?
+          AND t.status <> 'rejected'
+          AND t.time_in < ?
+          AND COALESCE(t.time_out, '24:00') > ?
+        ORDER BY t.time_in
+        LIMIT 1
+      `,
+      args: [req.student.id, attendanceDate, timeOut, timeIn]
     })
 
-    if (existing.rows.length > 0) {
+    if (overlapping.rows.length > 0) {
+      const clash = overlapping.rows[0]
       await transaction.rollback()
       transaction = null
+      const range = clash.time_out ? `${clash.time_in}–${clash.time_out}` : `from ${clash.time_in}`
       return res.status(409).json({
         success: false,
-        message: 'An attendance record has already been submitted for this date.'
+        message: `This time overlaps your ${clash.activity_title || 'general service'} record ` +
+          `(${range}) on ${attendanceDate}. Use a time range that doesn't overlap.`
       })
     }
 
@@ -706,11 +774,16 @@ router.post('/attendance', async (req, res) => {
     await transaction.execute({
       sql: `
         INSERT INTO attendance (
-          id, student_id, attendance_date, time_in, time_out, total_hours, status, activity_id
+          id, student_id, attendance_date, time_in, time_out, total_hours, status, activity_id,
+          before_photo_path, after_photo_path
         )
-        VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+        VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
       `,
-      args: [id, req.student.id, attendanceDate, timeIn, timeOut, totalHours, activityId]
+      args: [
+        id, req.student.id, attendanceDate, timeIn, timeOut, totalHours, activityId,
+        beforePhoto ? path.basename(beforePhoto.filename) : null,
+        afterPhoto ? path.basename(afterPhoto.filename) : null
+      ]
     })
     await transaction.commit()
     transaction = null
@@ -725,7 +798,9 @@ router.post('/attendance', async (req, res) => {
         time_out: timeOut,
         total_hours: totalHours,
         status: 'pending',
-        activity_id: activityId
+        activity_id: activityId,
+        has_before_photo: beforePhoto ? 1 : 0,
+        has_after_photo: afterPhoto ? 1 : 0
       }
     })
   } catch (error) {
@@ -741,6 +816,28 @@ router.post('/attendance', async (req, res) => {
       success: false,
       message: 'Failed to submit attendance.'
     })
+  }
+})
+
+router.get('/attendance/:id/photos/:kind', async (req, res) => {
+  const attendanceId = validateRecordId(req.params.id, res)
+  if (!attendanceId) return
+  if (!PHOTO_KINDS.includes(req.params.kind)) {
+    return res.status(404).json({ success: false, message: 'Photo was not found.' })
+  }
+
+  try {
+    const result = await db.execute({
+      sql: 'SELECT before_photo_path, after_photo_path FROM attendance WHERE id = ? AND student_id = ?',
+      args: [attendanceId, req.student.id]
+    })
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Attendance record was not found.' })
+    }
+    return await sendAttendancePhoto(res, result.rows[0], req.params.kind)
+  } catch (error) {
+    console.error('Student attendance photo error:', error)
+    return res.status(500).json({ success: false, message: 'Failed to load the photo.' })
   }
 })
 
@@ -1320,6 +1417,128 @@ router.get('/profile', async (req, res) => {
   }
 })
 
+// Profile picture. These are the only queries that use users.profile_photo_path, so the
+// rest of the student API keeps working on a database that hasn't run migration 006 yet.
+const profilePhotoUnavailable = 'Profile pictures are not available yet. Please try again later.'
+
+// 200 with the image, or 204 when the student has no picture (the page shows initials).
+router.get('/profile/photo', async (req, res) => {
+  try {
+    const result = await db.execute({
+      sql: "SELECT profile_photo_path FROM users WHERE id = ? AND role = 'student'",
+      args: [req.student.id]
+    })
+    const fileName = result.rows[0]?.profile_photo_path
+    if (!fileName) return res.status(204).end()
+    return await sendProfilePhoto(res, fileName)
+  } catch (error) {
+    if (isMissingProfilePhotoColumn(error)) return res.status(204).end()
+    console.error('Student profile photo error:', error)
+    return res.status(500).json({ success: false, message: 'Failed to load the profile picture.' })
+  }
+})
+
+// Multipart upload with the image in the "photo" field. Replaces any earlier picture.
+router.post('/profile/photo', handleProfilePhotoUpload, async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ success: false, message: 'Choose a picture to upload.' })
+  }
+
+  try {
+    if (!(await hasImageSignature(req.file))) {
+      return res.status(400).json({
+        success: false,
+        message: 'The file is not a valid JPEG, PNG, or WebP image.'
+      })
+    }
+  } catch (error) {
+    console.error('Profile photo check error:', error)
+    return res.status(500).json({ success: false, message: 'The uploaded picture could not be checked.' })
+  }
+
+  let transaction
+  try {
+    transaction = await db.transaction('write')
+    const current = await transaction.execute({
+      sql: "SELECT profile_photo_path FROM users WHERE id = ? AND role = 'student' AND account_status = 'approved'",
+      args: [req.student.id]
+    })
+    if (current.rows.length === 0) {
+      await transaction.rollback()
+      transaction = null
+      return res.status(404).json({ success: false, message: 'Student profile was not found.' })
+    }
+
+    await transaction.execute({
+      sql: 'UPDATE users SET profile_photo_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      args: [req.file.filename, req.student.id]
+    })
+    await transaction.commit()
+    transaction = null
+    keepUploadedProfilePhoto(res)
+
+    await removeStoredProfilePhoto(current.rows[0].profile_photo_path)
+    return res.json({ success: true, message: 'Profile picture updated.' })
+  } catch (error) {
+    if (transaction) {
+      try {
+        await transaction.rollback()
+      } catch (rollbackError) {
+        console.error('Failed to roll back profile photo update:', rollbackError)
+      }
+    }
+    if (isMissingProfilePhotoColumn(error)) {
+      console.error('users.profile_photo_path is missing. Run migration 006 (npm run db:migrate).')
+      return res.status(503).json({ success: false, message: profilePhotoUnavailable })
+    }
+    console.error('Student profile photo upload error:', error)
+    return res.status(500).json({ success: false, message: 'Failed to save the profile picture.' })
+  }
+})
+
+router.delete('/profile/photo', async (req, res) => {
+  let transaction
+  try {
+    transaction = await db.transaction('write')
+    const current = await transaction.execute({
+      sql: "SELECT profile_photo_path FROM users WHERE id = ? AND role = 'student' AND account_status = 'approved'",
+      args: [req.student.id]
+    })
+    if (current.rows.length === 0) {
+      await transaction.rollback()
+      transaction = null
+      return res.status(404).json({ success: false, message: 'Student profile was not found.' })
+    }
+
+    const previous = current.rows[0].profile_photo_path
+    if (previous) {
+      await transaction.execute({
+        sql: 'UPDATE users SET profile_photo_path = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        args: [req.student.id]
+      })
+    }
+    await transaction.commit()
+    transaction = null
+
+    await removeStoredProfilePhoto(previous)
+    return res.json({ success: true, message: 'Profile picture removed.' })
+  } catch (error) {
+    if (transaction) {
+      try {
+        await transaction.rollback()
+      } catch (rollbackError) {
+        console.error('Failed to roll back profile photo removal:', rollbackError)
+      }
+    }
+    if (isMissingProfilePhotoColumn(error)) {
+      console.error('users.profile_photo_path is missing. Run migration 006 (npm run db:migrate).')
+      return res.status(503).json({ success: false, message: profilePhotoUnavailable })
+    }
+    console.error('Student profile photo removal error:', error)
+    return res.status(500).json({ success: false, message: 'Failed to remove the profile picture.' })
+  }
+})
+
 router.patch('/profile', async (req, res) => {
   const body = req.body || {}
   const allowedFields = new Set(['first_name', 'middle_name', 'last_name', 'contact_number'])
@@ -1332,10 +1551,12 @@ router.patch('/profile', async (req, res) => {
     })
   }
 
+  // Registration doesn't collect a contact number, so it must stay optional here.
+  const optionalFields = new Set(['middle_name', 'contact_number'])
   const values = {}
   for (const field of fields) {
     const value = body[field]
-    if (field === 'middle_name' && (value === null || value === '')) {
+    if (optionalFields.has(field) && (value === null || (typeof value === 'string' && !value.trim()))) {
       values[field] = null
       continue
     }
