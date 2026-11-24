@@ -1,300 +1,425 @@
-
 <template>
-  <div class="register-page">
+  <section class="auth-view register-view">
+    <Transition name="register-swap" mode="out-in">
+      <!-- REGISTRATION WIZARD -->
+      <div v-if="!done" key="form">
+        <header class="auth-head">
+          <span class="auth-kicker auth-rise" style="--i: 0">
+            <AppIcon name="user-plus" :size="14" />
+            Student registration
+          </span>
+          <h2 class="auth-rise" style="--i: 1">Create your account</h2>
+          <p class="auth-rise" style="--i: 2">Three quick steps — it takes about a minute.</p>
+        </header>
 
-    <!-- LEFT BRANDING PANEL -->
-    <aside class="brand-panel">
-      <div class="brand-content">
-        <div class="brand-logo"><AppIcon name="graduation-cap" :size="26" /></div>
+        <ol class="stepper auth-rise" style="--i: 3" aria-label="Registration progress">
+          <template v-for="(item, i) in STEPS" :key="item.title">
+            <li class="stepper-item" :class="{ 'is-active': i === step, 'is-complete': i < step }">
+              <button
+                type="button"
+                class="stepper-btn"
+                :disabled="i >= step"
+                :aria-current="i === step ? 'step' : undefined"
+                :aria-label="`Step ${i + 1}: ${item.title}${i < step ? ' (completed, go back)' : ''}`"
+                @click="goTo(i)"
+              >
+                <span class="stepper-dot">
+                  <Transition name="icon-swap" mode="out-in">
+                    <AppIcon
+                      :key="i < step ? 'done' : item.icon"
+                      :name="i < step ? 'check' : item.icon"
+                      :size="16"
+                      :stroke-width="i < step ? 2.6 : 2"
+                    />
+                  </Transition>
+                </span>
+                <span class="stepper-text">
+                  <small>Step {{ i + 1 }}</small>
+                  <strong>{{ item.title }}</strong>
+                </span>
+              </button>
+            </li>
+            <li
+              v-if="i < STEPS.length - 1"
+              class="stepper-line"
+              :class="{ 'is-filled': i < step }"
+              aria-hidden="true"
+            />
+          </template>
+        </ol>
 
-        <div class="brand-title">
-          <span>STUDENT SERVICE PORTAL</span>
-          <h1>Return of<br />Service System</h1>
-          <p>
-            Manage your service hours, monitor your progress,
-            and stay updated with your school service activities.
-          </p>
-        </div>
+        <form ref="formEl" class="auth-rise" style="--i: 4" novalidate @submit.prevent="onSubmit">
+          <div class="step-viewport">
+            <Transition :name="`step-${stepDirection}`" mode="out-in" @after-enter="focusStep">
+              <div :key="step" class="step-panel" role="group" aria-labelledby="reg-step-title">
+                <div class="step-intro">
+                  <h3 id="reg-step-title" ref="stepTitle" tabindex="-1">{{ currentStep.heading }}</h3>
+                  <p>{{ currentStep.description }}</p>
+                </div>
 
-        <div class="brand-features">
-          <div class="feature">
-            <span class="feature-icon"><AppIcon name="clock" :size="17" /></span>
-            <div>
-              <strong>Track your service hours</strong>
-              <small>Monitor your progress toward 340 hours.</small>
-            </div>
+                <!-- STEP 1: PERSONAL INFORMATION -->
+                <div v-if="step === 0" class="field-grid">
+                  <AuthField id="reg-first-name" label="First name" icon="user" :error="errors.firstName">
+                    <template #default="{ attrs }">
+                      <input v-bind="attrs" v-model.trim="form.firstName" type="text" placeholder="Juan" autocomplete="given-name" />
+                    </template>
+                  </AuthField>
+
+                  <AuthField id="reg-last-name" label="Last name" icon="user" :error="errors.lastName">
+                    <template #default="{ attrs }">
+                      <input v-bind="attrs" v-model.trim="form.lastName" type="text" placeholder="Dela Cruz" autocomplete="family-name" />
+                    </template>
+                  </AuthField>
+
+                  <AuthField id="reg-middle-name" label="Middle name" icon="user" optional>
+                    <template #default="{ attrs }">
+                      <input v-bind="attrs" v-model.trim="form.middleName" type="text" placeholder="Santos" autocomplete="additional-name" />
+                    </template>
+                  </AuthField>
+
+                  <AuthField id="reg-student-id" label="Student ID" icon="id-card" :error="errors.studentId">
+                    <template #default="{ attrs }">
+                      <input v-bind="attrs" v-model.trim="form.studentId" type="text" placeholder="e.g. 2024-00123" autocomplete="off" spellcheck="false" />
+                    </template>
+                  </AuthField>
+
+                  <AuthField id="reg-email" label="School email" icon="mail" :error="errors.email" class="span-2">
+                    <template #default="{ attrs }">
+                      <input
+                        v-bind="attrs"
+                        v-model.trim="form.email"
+                        type="email"
+                        inputmode="email"
+                        placeholder="name@school.edu.ph"
+                        autocomplete="email"
+                        autocapitalize="none"
+                        spellcheck="false"
+                      />
+                    </template>
+                  </AuthField>
+                </div>
+
+                <!-- STEP 2: ACADEMIC INFORMATION -->
+                <div v-else-if="step === 1" class="field-grid">
+                  <AuthField id="reg-course" label="Course" icon="layers" :error="errors.course" class="span-2">
+                    <template #default="{ attrs }">
+                      <select v-bind="attrs" v-model="form.course" :class="{ 'is-placeholder': !form.course }">
+                        <option value="" disabled>Select your course</option>
+                        <option v-for="course in COURSES" :key="course.value" :value="course.value">
+                          {{ course.label }}
+                        </option>
+                      </select>
+                    </template>
+                    <template #suffix>
+                      <AppIcon name="chevron-down" :size="16" class="auth-select-chevron" />
+                    </template>
+                  </AuthField>
+
+                  <fieldset
+                    class="auth-field span-2"
+                    :class="{ 'has-error': !!errors.yearLevel }"
+                    :aria-describedby="errors.yearLevel ? 'reg-year-message' : undefined"
+                  >
+                    <legend class="auth-label year-legend">Year level</legend>
+                    <div class="year-pills">
+                      <label
+                        v-for="year in YEAR_LEVELS"
+                        :key="year.value"
+                        class="year-pill"
+                        :class="{ 'is-selected': form.yearLevel === year.value }"
+                      >
+                        <input
+                          :id="`reg-year-${year.value}`"
+                          v-model="form.yearLevel"
+                          type="radio"
+                          name="year-level"
+                          :value="year.value"
+                        />
+                        <span>{{ year.label }}</span>
+                      </label>
+                    </div>
+                    <Transition name="auth-msg">
+                      <p v-if="errors.yearLevel" id="reg-year-message" class="auth-field-msg is-error">
+                        <AppIcon name="alert-circle" :size="14" />
+                        <span>{{ errors.yearLevel }}</span>
+                      </p>
+                    </Transition>
+                  </fieldset>
+
+                  <AuthField id="reg-section" label="Section" icon="users" :error="errors.section" class="span-2">
+                    <template #default="{ attrs }">
+                      <input v-bind="attrs" v-model.trim="form.section" type="text" placeholder="e.g. BIT-2B" autocomplete="off" />
+                    </template>
+                  </AuthField>
+                </div>
+
+                <!-- STEP 3: ACCOUNT SECURITY -->
+                <div v-else class="field-stack">
+                  <AuthField
+                    id="reg-password"
+                    label="Password"
+                    icon="lock"
+                    :error="errors.password"
+                    hint="At least 8 characters. Mix in numbers and symbols to make it stronger."
+                  >
+                    <template #default="{ attrs }">
+                      <input
+                        v-bind="attrs"
+                        v-model="form.password"
+                        :type="showPassword ? 'text' : 'password'"
+                        placeholder="Create a password"
+                        autocomplete="new-password"
+                      />
+                    </template>
+                    <template #suffix>
+                      <button
+                        type="button"
+                        class="auth-reveal"
+                        :aria-label="showPassword ? 'Hide password' : 'Show password'"
+                        @click="showPassword = !showPassword"
+                      >
+                        <Transition name="icon-swap" mode="out-in">
+                          <AppIcon :key="String(showPassword)" :name="showPassword ? 'eye-off' : 'eye'" :size="18" />
+                        </Transition>
+                      </button>
+                    </template>
+                    <template #below>
+                      <Transition name="auth-msg">
+                        <div v-if="form.password" class="strength" :data-level="strength.level">
+                          <div class="strength-bars" aria-hidden="true">
+                            <span v-for="n in 4" :key="n" :class="{ 'is-on': n <= strength.level }" />
+                          </div>
+                          <span class="strength-label">{{ strength.label }}</span>
+                        </div>
+                      </Transition>
+                    </template>
+                  </AuthField>
+
+                  <AuthField
+                    id="reg-confirm-password"
+                    label="Confirm password"
+                    icon="lock"
+                    :error="errors.confirmPassword"
+                    :hint="passwordsMatch ? 'Passwords match' : ''"
+                    hint-tone="success"
+                    hint-icon="check-circle"
+                  >
+                    <template #default="{ attrs }">
+                      <input
+                        v-bind="attrs"
+                        v-model="form.confirmPassword"
+                        :type="showConfirmPassword ? 'text' : 'password'"
+                        placeholder="Type it once more"
+                        autocomplete="new-password"
+                      />
+                    </template>
+                    <template #suffix>
+                      <button
+                        type="button"
+                        class="auth-reveal"
+                        :aria-label="showConfirmPassword ? 'Hide password' : 'Show password'"
+                        @click="showConfirmPassword = !showConfirmPassword"
+                      >
+                        <Transition name="icon-swap" mode="out-in">
+                          <AppIcon :key="String(showConfirmPassword)" :name="showConfirmPassword ? 'eye-off' : 'eye'" :size="18" />
+                        </Transition>
+                      </button>
+                    </template>
+                  </AuthField>
+
+                  <div class="terms">
+                    <label class="auth-check" :class="{ 'has-error': !!errors.agree }">
+                      <input
+                        id="reg-agree"
+                        v-model="form.agree"
+                        type="checkbox"
+                        :aria-invalid="errors.agree ? 'true' : undefined"
+                        :aria-describedby="errors.agree ? 'reg-agree-message' : undefined"
+                      />
+                      <span class="auth-check-box" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><path pathLength="24" d="M5 12.5l4.5 4.5L19 7.5" /></svg>
+                      </span>
+                      <span>I confirm that the information I provided is accurate and correct.</span>
+                    </label>
+                    <Transition name="auth-msg">
+                      <p v-if="errors.agree" id="reg-agree-message" class="auth-field-msg is-error">
+                        <AppIcon name="alert-circle" :size="14" />
+                        <span>{{ errors.agree }}</span>
+                      </p>
+                    </Transition>
+                  </div>
+                </div>
+              </div>
+            </Transition>
           </div>
 
-          <div class="feature">
-            <span class="feature-icon"><AppIcon name="file-text" :size="17" /></span>
-            <div>
-              <strong>Manage your records</strong>
-              <small>Keep your service documents organized.</small>
+          <Transition name="auth-alert">
+            <div v-if="message" class="auth-alert is-error register-alert" role="alert">
+              <AppIcon name="alert-circle" :size="17" />
+              <span>{{ message }}</span>
             </div>
+          </Transition>
+
+          <div class="wizard-actions">
+            <Transition name="back-slide">
+              <button
+                v-if="step > 0"
+                type="button"
+                class="auth-btn auth-btn-ghost wizard-back"
+                :disabled="isSubmitting"
+                @click="goTo(step - 1)"
+              >
+                <AppIcon name="arrow-left" :size="17" />
+                Back
+              </button>
+            </Transition>
+
+            <button type="submit" class="auth-btn auth-btn-primary wizard-next" :disabled="isSubmitting">
+              <Transition name="btn-swap" mode="out-in">
+                <span v-if="isSubmitting" key="loading" class="auth-btn-content">
+                  <span class="auth-spinner" aria-hidden="true" />
+                  Creating account…
+                </span>
+                <span v-else-if="isLastStep" key="create" class="auth-btn-content">
+                  Create account
+                  <AppIcon name="check" :size="18" :stroke-width="2.4" />
+                </span>
+                <span v-else key="next" class="auth-btn-content">
+                  Continue
+                  <AppIcon name="arrow-right" :size="18" class="auth-btn-arrow" />
+                </span>
+              </Transition>
+            </button>
           </div>
-
-          <div class="feature">
-            <span class="feature-icon"><AppIcon name="bell" :size="17" /></span>
-            <div>
-              <strong>Stay informed</strong>
-              <small>Receive important program announcements.</small>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="brand-footer">
-        Return of Service System · Student Portal
-      </div>
-    </aside>
-
-    <!-- RIGHT REGISTRATION AREA -->
-    <main class="form-panel">
-      <div class="register-container">
-
-        <div class="mobile-logo">
-          <div class="brand-logo"><AppIcon name="graduation-cap" :size="26" /></div>
-          <span>RETURN OF SERVICE SYSTEM</span>
-        </div>
-
-        <div class="form-heading">
-          <span class="eyebrow">STUDENT REGISTRATION</span>
-          <h2>Create your account</h2>
-          <p>Enter your information to get started with the RSS portal.</p>
-        </div>
-
-        <form @submit.prevent="register">
-
-          <!-- PERSONAL INFORMATION -->
-          <section class="form-section">
-            <div class="section-heading">
-              <div class="section-number">01</div>
-              <div>
-                <h3>Personal Information</h3>
-                <p>Provide your basic student information.</p>
-              </div>
-            </div>
-
-            <div class="form-grid">
-              <div class="form-group">
-                <label>First Name <span>*</span></label>
-                <input
-                  v-model.trim="form.firstName"
-                  type="text"
-                  placeholder="Enter first name"
-                  autocomplete="given-name"
-                  required
-                />
-              </div>
-
-              <div class="form-group">
-                <label>Last Name <span>*</span></label>
-                <input
-                  v-model.trim="form.lastName"
-                  type="text"
-                  placeholder="Enter last name"
-                  autocomplete="family-name"
-                  required
-                />
-              </div>
-
-              <div class="form-group full-width">
-                <label>Middle Name <small>(Optional)</small></label>
-                <input
-                  v-model.trim="form.middleName"
-                  type="text"
-                  placeholder="Enter middle name"
-                />
-              </div>
-
-              <div class="form-group">
-                <label>Student ID <span>*</span></label>
-                <input
-                  v-model.trim="form.studentId"
-                  type="text"
-                  placeholder="Enter student ID"
-                  required
-                />
-              </div>
-
-              <div class="form-group">
-                <label>School Email <span>*</span></label>
-                <input
-                  v-model.trim="form.email"
-                  type="email"
-                  placeholder="name@school.edu.ph"
-                  autocomplete="email"
-                  required
-                />
-              </div>
-            </div>
-          </section>
-
-          <!-- ACADEMIC INFORMATION -->
-          <section class="form-section">
-            <div class="section-heading">
-              <div class="section-number">02</div>
-              <div>
-                <h3>Academic Information</h3>
-                <p>Enter your current academic details.</p>
-              </div>
-            </div>
-
-            <div class="form-grid">
-              <div class="form-group full-width">
-                <label>Course <span>*</span></label>
-                <select v-model="form.course" required>
-                  <option value="" disabled>Select your course</option>
-                  <option value="BIT">
-                    Bachelor of Industrial Technology (BIT)
-                  </option>
-                  <option value="BSIT">
-                    Bachelor of Science in Information Technology
-                  </option>
-                  <option value="BSHM">
-                    Bachelor of Science in Hospitality Management
-                  </option>
-                  <option value="BSED">
-                    Bachelor of Secondary Education
-                  </option>
-                  <option value="BEED">
-                    Bachelor of Elementary Education
-                  </option>
-                </select>
-              </div>
-
-              <div class="form-group">
-                <label>Year Level <span>*</span></label>
-                <select v-model="form.yearLevel" required>
-                  <option value="" disabled>Select year level</option>
-                  <option value="1">1st Year</option>
-                  <option value="2">2nd Year</option>
-                  <option value="3">3rd Year</option>
-                  <option value="4">4th Year</option>
-                </select>
-              </div>
-
-              <div class="form-group">
-                <label>Section <span>*</span></label>
-                <input
-                  v-model.trim="form.section"
-                  type="text"
-                  placeholder="e.g. BIT-2B"
-                  required
-                />
-              </div>
-            </div>
-          </section>
-
-          <!-- ACCOUNT SECURITY -->
-          <section class="form-section security-section">
-            <div class="section-heading">
-              <div class="section-number">03</div>
-              <div>
-                <h3>Account Security</h3>
-                <p>Create a secure password for your account.</p>
-              </div>
-            </div>
-
-            <div class="form-group">
-              <label>Password <span>*</span></label>
-              <div class="password-wrapper">
-                <input
-                  v-model="form.password"
-                  :type="showPassword ? 'text' : 'password'"
-                  placeholder="Create a password"
-                  autocomplete="new-password"
-                  minlength="8"
-                  required
-                />
-                <button
-                  type="button"
-                  class="password-toggle"
-                  @click="showPassword = !showPassword"
-                >
-                  {{ showPassword ? 'Hide' : 'Show' }}
-                </button>
-              </div>
-              <small class="input-hint">Use at least 8 characters.</small>
-            </div>
-
-            <div class="form-group">
-              <label>Confirm Password <span>*</span></label>
-              <div class="password-wrapper">
-                <input
-                  v-model="form.confirmPassword"
-                  :type="showConfirmPassword ? 'text' : 'password'"
-                  placeholder="Confirm your password"
-                  autocomplete="new-password"
-                  minlength="8"
-                  required
-                />
-                <button
-                  type="button"
-                  class="password-toggle"
-                  @click="showConfirmPassword = !showConfirmPassword"
-                >
-                  {{ showConfirmPassword ? 'Hide' : 'Show' }}
-                </button>
-              </div>
-            </div>
-          </section>
-
-          <!-- TERMS -->
-          <label class="terms">
-            <input type="checkbox" v-model="form.agree" required />
-            <span>
-              I confirm that the information I provided is accurate
-              and correct.
-            </span>
-          </label>
-
-          <!-- MESSAGE -->
-          <div v-if="message" :class="['message', messageType]">
-            {{ message }}
-          </div>
-
-          <!-- SUBMIT -->
-          <button
-            type="submit"
-            class="register-button"
-            :disabled="isSubmitting"
-          >
-            {{ isSubmitting ? 'Creating Account...' : 'Create Account' }}
-            <AppIcon v-if="!isSubmitting" name="arrow-right" :size="18" />
-          </button>
-
         </form>
 
-        <div class="login-link">
+        <p class="auth-alt auth-rise" style="--i: 5">
           Already have an account?
-          <router-link to="/login">Sign in instead</router-link>
-        </div>
-
-        <div class="form-footer">
-          © 2026 Return of Service System. All rights reserved.
-        </div>
-
+          <router-link to="/login" class="auth-link">Sign in</router-link>
+        </p>
       </div>
-    </main>
-  </div>
+
+      <!-- SUCCESS -->
+      <div v-else key="done" class="register-success" role="status">
+        <div class="success-badge" aria-hidden="true">
+          <svg viewBox="0 0 52 52" class="success-check">
+            <circle cx="26" cy="26" r="24" pathLength="100" />
+            <path d="M15 27l7 7 15-15" pathLength="100" />
+          </svg>
+          <span
+            v-for="n in 8"
+            :key="n"
+            class="success-spark"
+            :style="{ '--a': `${n * 45}deg`, '--c': SPARK_COLORS[n % SPARK_COLORS.length] }"
+          />
+        </div>
+
+        <span class="auth-kicker auth-rise" style="--i: 2">Registration received</span>
+        <h2 class="auth-rise" style="--i: 3">You're all set, {{ form.firstName }}!</h2>
+        <p class="success-message auth-rise" style="--i: 4">{{ successMessage }}</p>
+
+        <ol class="next-steps">
+          <li class="is-done auth-rise" style="--i: 5">
+            <span class="next-icon"><AppIcon name="check" :size="15" :stroke-width="2.6" /></span>
+            <div>
+              <strong>Account created</strong>
+              <small>{{ form.email }}</small>
+            </div>
+          </li>
+          <li class="is-current auth-rise" style="--i: 6">
+            <span class="next-icon"><AppIcon name="hourglass" :size="15" /></span>
+            <div>
+              <strong>Admin review</strong>
+              <small>An administrator checks your details.</small>
+            </div>
+          </li>
+          <li class="auth-rise" style="--i: 7">
+            <span class="next-icon"><AppIcon name="log-in" :size="15" /></span>
+            <div>
+              <strong>Sign in</strong>
+              <small>Use your school email and password once approved.</small>
+            </div>
+          </li>
+        </ol>
+
+        <div class="auth-rise" style="--i: 8">
+          <router-link to="/login" class="auth-btn auth-btn-primary auth-btn-block">
+            Go to sign in
+            <AppIcon name="arrow-right" :size="18" class="auth-btn-arrow" />
+          </router-link>
+        </div>
+      </div>
+    </Transition>
+  </section>
 </template>
 
-
 <script setup>
-import { reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import AppIcon from '@/components/AppIcon.vue'
+import AuthField from '@/components/AuthField.vue'
+import { hasFinePointer, shake } from '@/utils/motion'
 
 const API_URL = (
   import.meta.env.VITE_API_URL || 'http://localhost:4000/api'
 ).replace(/\/+$/, '')
 
-const message = ref('')
-const messageType = ref('success')
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
-const showPassword = ref(false)
-const showConfirmPassword = ref(false)
-const isSubmitting = ref(false)
+const STEPS = [
+  {
+    title: 'Personal',
+    icon: 'user',
+    heading: 'Tell us about you',
+    description: 'Use your name and student ID exactly as they appear in school records.',
+    fields: ['firstName', 'lastName', 'studentId', 'email']
+  },
+  {
+    title: 'Academic',
+    icon: 'graduation-cap',
+    heading: 'Your program',
+    description: 'This places you in the right course and section.',
+    fields: ['course', 'yearLevel', 'section']
+  },
+  {
+    title: 'Security',
+    icon: 'lock',
+    heading: 'Secure your account',
+    description: 'Pick a password you don’t use anywhere else.',
+    fields: ['password', 'confirmPassword', 'agree']
+  }
+]
+
+const COURSES = [
+  { value: 'BIT', label: 'Bachelor of Industrial Technology (BIT)' },
+  { value: 'BSIT', label: 'Bachelor of Science in Information Technology' },
+  { value: 'BSHM', label: 'Bachelor of Science in Hospitality Management' },
+  { value: 'BSED', label: 'Bachelor of Secondary Education' },
+  { value: 'BEED', label: 'Bachelor of Elementary Education' }
+]
+
+const YEAR_LEVELS = [
+  { value: '1', label: '1st Year' },
+  { value: '2', label: '2nd Year' },
+  { value: '3', label: '3rd Year' },
+  { value: '4', label: '4th Year' }
+]
+
+// Element to focus when a field fails validation.
+const FIELD_IDS = {
+  firstName: 'reg-first-name',
+  lastName: 'reg-last-name',
+  studentId: 'reg-student-id',
+  email: 'reg-email',
+  course: 'reg-course',
+  yearLevel: 'reg-year-1',
+  section: 'reg-section',
+  password: 'reg-password',
+  confirmPassword: 'reg-confirm-password',
+  agree: 'reg-agree'
+}
+
+const STRENGTH_LABELS = ['', 'Weak', 'Fair', 'Good', 'Strong']
+const SPARK_COLORS = ['#3b82f6', '#8b5cf6', '#10b981', '#f59e0b']
 
 const form = reactive({
   firstName: '',
@@ -310,24 +435,144 @@ const form = reactive({
   agree: false
 })
 
+// Each returns an error message, or '' when the value is fine.
+const VALIDATORS = {
+  firstName: () => (form.firstName ? '' : 'Enter your first name.'),
+  lastName: () => (form.lastName ? '' : 'Enter your last name.'),
+  studentId: () => (form.studentId ? '' : 'Enter your student ID.'),
+  email: () => {
+    if (!form.email) return 'Enter your school email.'
+    return EMAIL_PATTERN.test(form.email) ? '' : 'That doesn’t look like a valid email address.'
+  },
+  course: () => (form.course ? '' : 'Select your course.'),
+  yearLevel: () => (form.yearLevel ? '' : 'Choose your year level.'),
+  section: () => (form.section ? '' : 'Enter your section.'),
+  password: () => {
+    if (!form.password) return 'Create a password.'
+    return form.password.length >= 8 ? '' : 'Password must contain at least 8 characters.'
+  },
+  confirmPassword: () => {
+    if (!form.confirmPassword) return 'Confirm your password.'
+    return form.confirmPassword === form.password ? '' : 'Passwords do not match.'
+  },
+  agree: () => (form.agree ? '' : 'Please confirm your information before registering.')
+}
+
+const errors = reactive(Object.fromEntries(Object.keys(VALIDATORS).map(key => [key, ''])))
+
+const step = ref(0)
+const stepDirection = ref('next')
+const showPassword = ref(false)
+const showConfirmPassword = ref(false)
+const isSubmitting = ref(false)
+const message = ref('')
+const done = ref(false)
+const successMessage = ref('')
+
+const formEl = ref(null)
+const stepTitle = ref(null)
+
+const currentStep = computed(() => STEPS[step.value])
+const isLastStep = computed(() => step.value === STEPS.length - 1)
+
+const strength = computed(() => {
+  const value = form.password
+  if (value.length < 8) return { level: 1, label: 'Too short' }
+
+  const extras = [
+    value.length >= 12,
+    /[a-z]/.test(value) && /[A-Z]/.test(value),
+    /\d/.test(value),
+    /[^A-Za-z0-9]/.test(value)
+  ].filter(Boolean).length
+
+  const level = 1 + Math.min(3, extras)
+  return { level, label: STRENGTH_LABELS[level] }
+})
+
+const passwordsMatch = computed(() =>
+  form.confirmPassword.length > 0 && form.confirmPassword === form.password
+)
+
+// Once a field shows an error, re-check it as the student types so the
+// message disappears the moment it's fixed.
+for (const field of Object.keys(VALIDATORS)) {
+  watch(() => form[field], () => {
+    if (errors[field]) errors[field] = VALIDATORS[field]()
+  })
+}
+
+watch(() => form.password, () => {
+  if (errors.confirmPassword && form.confirmPassword) {
+    errors.confirmPassword = VALIDATORS.confirmPassword()
+  }
+})
+
+onMounted(() => {
+  if (hasFinePointer()) document.getElementById(FIELD_IDS.firstName)?.focus({ preventScroll: true })
+})
+
+// Returns the first invalid field in the list, or null.
+function validateFields(fields) {
+  let firstInvalid = null
+  for (const field of fields) {
+    errors[field] = VALIDATORS[field]()
+    if (errors[field] && !firstInvalid) firstInvalid = field
+  }
+  return firstInvalid
+}
+
+function rejectField(field) {
+  shake(formEl.value)
+  document.getElementById(FIELD_IDS[field])?.focus()
+}
+
+function goTo(index) {
+  if (index === step.value || index < 0 || index >= STEPS.length) return
+  stepDirection.value = index > step.value ? 'next' : 'prev'
+  message.value = ''
+  step.value = index
+}
+
+function next() {
+  const invalid = validateFields(currentStep.value.fields)
+  if (invalid) {
+    rejectField(invalid)
+    return
+  }
+  goTo(step.value + 1)
+}
+
+function onSubmit() {
+  if (isLastStep.value) register()
+  else next()
+}
+
+// After a step slides in, move focus there: the first field with a mouse,
+// otherwise the step heading so screen readers announce the new step.
+function focusStep() {
+  if (hasFinePointer()) {
+    const panel = formEl.value?.querySelector('.step-panel')
+    const field = panel?.querySelector('input:not([type="radio"]):not([type="checkbox"]), select')
+    if (field) {
+      field.focus({ preventScroll: true })
+      return
+    }
+  }
+  stepTitle.value?.focus({ preventScroll: true })
+}
+
 async function register() {
+  if (isSubmitting.value) return
+
   message.value = ''
 
-  if (form.password.length < 8) {
-    message.value = 'Password must contain at least 8 characters.'
-    messageType.value = 'error'
-    return
-  }
-
-  if (form.password !== form.confirmPassword) {
-    message.value = 'Passwords do not match. Please try again.'
-    messageType.value = 'error'
-    return
-  }
-
-  if (!form.agree) {
-    message.value = 'Please confirm your information before registering.'
-    messageType.value = 'error'
+  // Every step is checked on the way forward; re-check them all anyway.
+  for (let i = 0; i < STEPS.length; i++) {
+    const invalid = validateFields(STEPS[i].fields)
+    if (!invalid) continue
+    if (i === step.value) rejectField(invalid)
+    else goTo(i)
     return
   }
 
@@ -352,28 +597,37 @@ async function register() {
       })
     })
 
-    const data = await response.json()
+    const data = await response.json().catch(() => ({}))
 
     if (!response.ok) {
-      throw new Error(data.message || 'Registration failed.')
+      const error = new Error(data.message || 'Registration failed.')
+      error.status = response.status
+      throw error
     }
 
-    messageType.value = 'success'
-    message.value = data.message
+    successMessage.value = data.message || 'Registration successful! Your account is waiting for admin approval.'
 
-    // Clear password fields after successful registration
+    // Don't keep the password in memory once the account exists.
     form.password = ''
     form.confirmPassword = ''
-    form.agree = false
+    done.value = true
 
   } catch (error) {
-    messageType.value = 'error'
+    const text = error instanceof TypeError
+      ? 'Cannot connect to the server. Please make sure your backend is running.'
+      : error.message
 
-    if (error instanceof TypeError) {
-      message.value = 'Cannot connect to the server. Please make sure your backend is running.'
+    if (error.status === 409) {
+      // Student ID or email already taken: send them back to fix it.
+      goTo(0)
+      errors.studentId = 'This student ID may already be registered.'
+      errors.email = 'This email may already be registered.'
     } else {
-      message.value = error.message
+      shake(formEl.value)
     }
+
+    await nextTick()
+    message.value = text
   } finally {
     isSubmitting.value = false
   }
@@ -381,446 +635,442 @@ async function register() {
 </script>
 
 <style scoped>
-* {
-  box-sizing: border-box;
-}
+.register-view { max-width: 540px; }
 
-.register-page {
-  min-height: 100vh;
-  display: grid;
-  grid-template-columns: 40% 60%;
-  background: #f7f9fc;
-  color: #19283d;
-  font-family: Inter, Arial, sans-serif;
-}
+/* ---------- Stepper ---------- */
 
-/* BRANDING PANEL */
-.brand-panel {
-  min-height: 100vh;
-  padding: 55px 55px 30px;
-  background:
-    radial-gradient(circle at 10% 90%, rgba(55, 115, 204, .22), transparent 35%),
-    linear-gradient(145deg, #12243d, #1c3c68);
-  color: white;
+.stepper {
   display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  overflow: hidden;
-  position: relative;
-}
-
-.brand-content {
-  max-width: 470px;
-  margin: auto;
-}
-
-.brand-logo {
-  width: 55px;
-  height: 55px;
-  border-radius: 14px;
-  background: linear-gradient(135deg, #3b82f6, #1d4ed8);
-  display: grid;
-  place-items: center;
-  color: white;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
-}
-
-.brand-title {
-  margin-top: 75px;
-}
-
-.brand-title > span,
-.eyebrow {
-  font-size: 10px;
-  letter-spacing: 2px;
-  font-weight: 700;
-  color: #83b4ff;
-}
-
-.brand-title h1 {
-  font-size: clamp(32px, 3.2vw, 46px);
-  line-height: 1.15;
-  margin: 20px 0;
-  letter-spacing: -1.5px;
-}
-
-.brand-title p {
-  color: #b9c9df;
-  font-size: 13px;
-  line-height: 1.9;
-  max-width: 380px;
-}
-
-.brand-features {
-  display: grid;
-  gap: 24px;
-  margin-top: 60px;
-}
-
-.feature {
-  display: flex;
-  align-items: center;
-  gap: 15px;
-}
-
-.feature-icon {
-  width: 38px;
-  height: 38px;
-  flex-shrink: 0;
-  display: grid;
-  place-items: center;
-  background: rgba(255, 255, 255, .1);
-  border: 1px solid rgba(255, 255, 255, .13);
-  border-radius: 10px;
-  color: #8bbaff;
-  font-weight: 700;
-}
-
-.feature strong {
-  display: block;
-  font-size: 12px;
-  margin-bottom: 5px;
-}
-
-.feature small {
-  color: #aebed4;
-  font-size: 10px;
-}
-
-.brand-footer {
-  color: #8398b4;
-  font-size: 10px;
-  margin-top: 40px;
-}
-
-/* FORM PANEL */
-.form-panel {
-  padding: 45px 55px;
-  display: flex;
-  justify-content: center;
-  align-items: flex-start;
-}
-
-.register-container {
-  width: 100%;
-  max-width: 680px;
-}
-
-.mobile-logo {
-  display: none;
-}
-
-.form-heading {
-  margin-bottom: 35px;
-}
-
-.form-heading h2 {
-  font-size: 30px;
-  letter-spacing: -1px;
-  margin: 12px 0 9px;
-  color: #182a43;
-}
-
-.form-heading p {
-  color: #8591a2;
-  font-size: 12px;
-  line-height: 1.7;
-}
-
-/* FORM SECTIONS */
-.form-section {
-  margin-bottom: 30px;
-}
-
-.section-heading {
-  display: flex;
-  align-items: center;
-  gap: 13px;
-  padding-bottom: 16px;
-  margin-bottom: 20px;
-  border-bottom: 1px solid #e8edf4;
-}
-
-.section-number {
-  width: 35px;
-  height: 35px;
-  border-radius: 10px;
-  display: grid;
-  place-items: center;
-  background: #eaf1ff;
-  color: #3479e8;
-  font-size: 11px;
-  font-weight: 800;
-}
-
-.section-heading h3 {
-  margin: 0 0 5px;
-  font-size: 14px;
-  color: #24354b;
-}
-
-.section-heading p {
-  margin: 0;
-  font-size: 10px;
-  color: #929dad;
-}
-
-.form-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 19px 16px;
-}
-
-.form-group {
-  min-width: 0;
-  margin-bottom: 18px;
-}
-
-.form-grid .form-group {
-  margin-bottom: 0;
-}
-
-.full-width {
-  grid-column: 1 / -1;
-}
-
-.form-group label {
-  display: block;
-  color: #435168;
-  font-size: 11px;
-  font-weight: 700;
-  margin-bottom: 9px;
-}
-
-.form-group label span {
-  color: #e05252;
-}
-
-.form-group label small {
-  color: #98a2b1;
-  font-weight: 400;
-}
-
-.form-group input,
-.form-group select {
-  width: 100%;
-  height: 45px;
-  padding: 0 13px;
-  border: 1px solid #e1e7ef;
-  border-radius: 8px;
-  background: white;
-  color: #25364c;
-  outline: none;
-  font-size: 11px;
-  transition: .2s;
-}
-
-.form-group input::placeholder {
-  color: #aab3c0;
-}
-
-.form-group input:focus,
-.form-group select:focus {
-  border-color: #4384e9;
-  box-shadow: 0 0 0 3px rgba(52, 121, 232, .09);
-}
-
-.form-group select {
-  cursor: pointer;
-}
-
-/* PASSWORD */
-.password-wrapper {
-  position: relative;
-}
-
-.password-wrapper input {
-  padding-right: 65px;
-}
-
-.password-toggle {
-  position: absolute;
-  right: 12px;
-  top: 50%;
-  transform: translateY(-50%);
-  border: none;
-  background: transparent;
-  color: #3479e8;
-  font-size: 10px;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.input-hint {
-  display: block;
-  margin-top: 7px;
-  color: #929dad;
-  font-size: 10px;
-}
-
-/* TERMS */
-.terms {
-  display: flex;
-  align-items: flex-start;
-  gap: 11px;
-  color: #69768a;
-  font-size: 11px;
-  line-height: 1.6;
-  margin: 8px 0 22px;
-  cursor: pointer;
-}
-
-.terms input {
-  width: 15px;
-  height: 15px;
-  flex-shrink: 0;
-  margin: 1px 0 0;
-  accent-color: #3479e8;
-  cursor: pointer;
-}
-
-/* BUTTON */
-.register-button {
-  width: 100%;
-  height: 49px;
-  padding: 0 18px;
-  display: flex;
-  justify-content: center;
   align-items: center;
   gap: 12px;
-  border: none;
-  border-radius: 9px;
-  background: #3479e8;
-  color: white;
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: .2s;
-  box-shadow: 0 5px 14px rgba(52, 121, 232, .18);
+  margin: 0 0 26px;
+  padding: 0;
+  list-style: none;
 }
 
-.register-button:hover:not(:disabled) {
-  background: #2468d1;
+.stepper-item { flex: 0 0 auto; }
+
+.stepper-line {
+  position: relative;
+  flex: 1;
+  min-width: 14px;
+  height: 2px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--border);
+}
+
+.stepper-line::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, #10b981, #2563eb);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.55s cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+.stepper-line.is-filled::after { transform: scaleX(1); }
+
+.stepper-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.stepper-btn:disabled { cursor: default; }
+
+.stepper-dot {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 50%;
+  background: #fff;
+  color: var(--text-4);
+  transition: background-color 0.35s ease, border-color 0.35s ease, color 0.35s ease, transform 0.25s ease, box-shadow 0.35s ease;
+}
+
+.is-active .stepper-dot {
+  border-color: transparent;
+  background: linear-gradient(135deg, #2563eb, #4f46e5);
+  color: #fff;
+  box-shadow: 0 8px 18px -8px rgba(37, 99, 235, 0.85);
+  animation: dot-pulse 2.4s ease-out infinite;
+}
+
+@keyframes dot-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.35), 0 8px 18px -8px rgba(37, 99, 235, 0.85); }
+  70%, 100% { box-shadow: 0 0 0 9px rgba(37, 99, 235, 0), 0 8px 18px -8px rgba(37, 99, 235, 0.85); }
+}
+
+.is-complete .stepper-dot {
+  border-color: transparent;
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.is-complete .stepper-btn:hover .stepper-dot { transform: scale(1.08); }
+
+.stepper-text small {
+  display: block;
+  color: var(--text-4);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.stepper-text strong {
+  display: block;
+  color: var(--text-3);
+  font-size: 13.5px;
+  font-weight: 600;
+  transition: color 0.3s ease;
+}
+
+.is-active .stepper-text strong,
+.is-complete .stepper-text strong { color: var(--text); }
+
+/* ---------- Step panels ---------- */
+
+/* Clip the sideways slide without cutting off focus rings. */
+.step-viewport {
+  margin: -8px;
+  padding: 8px;
+  overflow: hidden;
+}
+
+.step-intro { margin-bottom: 18px; }
+
+.step-intro h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  outline: none;
+}
+
+.step-intro p {
+  margin: 3px 0 0;
+  color: var(--text-3);
+  font-size: 13.5px;
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px 14px;
+}
+
+.span-2 { grid-column: 1 / -1; }
+
+.field-stack {
+  display: grid;
+  gap: 18px;
+}
+
+.step-next-enter-active,
+.step-prev-enter-active {
+  transition: opacity 0.3s ease, transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.step-next-leave-active,
+.step-prev-leave-active {
+  transition: opacity 0.18s ease-in, transform 0.18s ease-in;
+}
+
+.step-next-enter-from,
+.step-prev-leave-to { opacity: 0; transform: translateX(44px); }
+
+.step-next-leave-to,
+.step-prev-enter-from { opacity: 0; transform: translateX(-44px); }
+
+/* Year level pills */
+
+.year-legend {
+  float: left;
+  width: 100%;
+  margin-bottom: 8px;
+  padding: 0;
+}
+
+.year-pills {
+  clear: both;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.year-pill {
+  position: relative;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #fff;
+  color: var(--text-2);
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background-color 0.2s ease, color 0.2s ease, transform 0.2s ease, box-shadow 0.25s ease;
+}
+
+.year-pill input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.year-pill:hover {
+  border-color: var(--border-strong);
   transform: translateY(-1px);
 }
 
-.register-button:disabled {
-  opacity: .65;
-  cursor: not-allowed;
+.year-pill:has(input:focus-visible) {
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.2);
 }
 
-/* FEEDBACK */
-.message {
-  padding: 12px 14px;
-  border-radius: 8px;
-  margin-bottom: 15px;
-  font-size: 11px;
-  line-height: 1.5;
+.year-pill.is-selected {
+  border-color: transparent;
+  background: linear-gradient(135deg, #2563eb, #4f46e5);
+  color: #fff;
+  box-shadow: 0 10px 20px -10px rgba(37, 99, 235, 0.85);
+  animation: pill-pop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.message.success {
-  background: #e8f7ee;
-  color: #18834d;
+.auth-field.has-error .year-pill:not(.is-selected) { border-color: #f1a7a1; }
+
+@keyframes pill-pop { 50% { transform: scale(1.06); } }
+
+/* Password strength */
+
+.strength {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
 }
 
-.message.error {
-  background: #fff0f0;
-  color: #c33d3d;
+.strength-bars {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 5px;
 }
 
-/* FOOTER */
-.login-link {
-  text-align: center;
-  margin-top: 25px;
-  color: #8994a4;
-  font-size: 11px;
+.strength-bars span {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--border);
+  transition: background-color 0.3s ease;
 }
 
-.login-link a {
-  color: #3479e8;
-  font-weight: 700;
-  text-decoration: none;
-  margin-left: 4px;
+.strength-label {
+  min-width: 64px;
+  font-size: 12px;
+  font-weight: 650;
+  text-align: right;
+  transition: color 0.3s ease;
 }
 
-.login-link a:hover {
-  text-decoration: underline;
+.strength[data-level='1'] .is-on { background: #ef4444; }
+.strength[data-level='2'] .is-on { background: #f59e0b; }
+.strength[data-level='3'] .is-on { background: #22c55e; }
+.strength[data-level='4'] .is-on { background: #059669; }
+
+.strength[data-level='1'] .strength-label { color: #dc2626; }
+.strength[data-level='2'] .strength-label { color: #b45309; }
+.strength[data-level='3'] .strength-label { color: #16a34a; }
+.strength[data-level='4'] .strength-label { color: #047857; }
+
+.terms { padding-top: 2px; }
+
+/* ---------- Actions ---------- */
+
+.register-alert { margin-top: 20px; }
+
+.wizard-actions {
+  display: flex;
+  margin-top: 24px;
 }
 
-.form-footer {
-  text-align: center;
-  color: #a1aab7;
-  font-size: 9px;
-  margin-top: 35px;
+.wizard-back {
+  max-width: 140px;
+  margin-right: 12px;
 }
 
-/* RESPONSIVE */
-@media (max-width: 1050px) {
-  .register-page {
-    grid-template-columns: 35% 65%;
-  }
+.wizard-next { flex: 1; }
 
-  .brand-panel {
-    padding: 40px 28px;
-  }
-
-  .form-panel {
-    padding: 40px 30px;
-  }
+/* Back button grows in from zero width so Continue resizes smoothly. */
+.back-slide-enter-active,
+.back-slide-leave-active {
+  transition:
+    max-width 0.4s cubic-bezier(0.65, 0, 0.35, 1),
+    margin-right 0.4s cubic-bezier(0.65, 0, 0.35, 1),
+    padding 0.4s cubic-bezier(0.65, 0, 0.35, 1),
+    opacity 0.3s ease;
 }
 
-@media (max-width: 750px) {
-  .register-page {
-    display: block;
-  }
-
-  .brand-panel {
-    display: none;
-  }
-
-  .form-panel {
-    padding: 28px 20px;
-  }
-
-  .mobile-logo {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    margin-bottom: 35px;
-    color: #263a54;
-    font-size: 10px;
-    font-weight: 800;
-    letter-spacing: 1px;
-  }
-
-  .mobile-logo .brand-logo {
-    width: 42px;
-    height: 42px;
-    font-size: 13px;
-    border-radius: 11px;
-  }
-
-  .form-heading h2 {
-    font-size: 26px;
-  }
+.back-slide-enter-from,
+.back-slide-leave-to {
+  max-width: 0;
+  margin-right: 0;
+  padding-left: 0;
+  padding-right: 0;
+  opacity: 0;
 }
 
-@media (max-width: 480px) {
-  .form-panel {
-    padding: 22px 17px;
-  }
+/* ---------- Success ---------- */
 
-  .form-grid {
-    grid-template-columns: 1fr;
-    gap: 18px;
-  }
+.register-swap-enter-active { transition: opacity 0.4s ease, transform 0.5s cubic-bezier(0.16, 1, 0.3, 1); }
+.register-swap-leave-active { transition: opacity 0.2s ease, transform 0.2s ease; }
+.register-swap-enter-from { opacity: 0; transform: scale(0.96); }
+.register-swap-leave-to { opacity: 0; transform: scale(1.02); }
 
-  .full-width {
-    grid-column: auto;
-  }
+.register-success { text-align: center; }
 
-  .form-heading {
-    margin-bottom: 27px;
-  }
+.success-badge {
+  position: relative;
+  width: 84px;
+  height: 84px;
+  margin: 0 auto 22px;
+}
+
+.success-check {
+  width: 100%;
+  height: 100%;
+}
+
+.success-check circle {
+  fill: #ecfdf5;
+  stroke: #10b981;
+  stroke-width: 2.5;
+  stroke-dasharray: 100;
+  stroke-dashoffset: 100;
+  animation: draw 0.7s cubic-bezier(0.65, 0, 0.35, 1) 0.1s forwards;
+}
+
+.success-check path {
+  fill: none;
+  stroke: #059669;
+  stroke-width: 3.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 100;
+  stroke-dashoffset: 100;
+  animation: draw 0.45s cubic-bezier(0.65, 0, 0.35, 1) 0.65s forwards;
+}
+
+@keyframes draw { to { stroke-dashoffset: 0; } }
+
+.success-spark {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 7px;
+  height: 7px;
+  margin: -3.5px;
+  border-radius: 50%;
+  background: var(--c);
+  opacity: 0;
+  animation: spark 0.9s cubic-bezier(0.16, 1, 0.3, 1) 0.9s;
+}
+
+@keyframes spark {
+  0% { opacity: 1; transform: rotate(var(--a)) translateY(-34px) scale(1); }
+  100% { opacity: 0; transform: rotate(var(--a)) translateY(-66px) scale(0.3); }
+}
+
+.register-success h2 {
+  margin: 10px 0 0;
+  color: var(--text);
+  font-size: clamp(24px, 3vw, 30px);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+}
+
+.success-message {
+  max-width: 400px;
+  margin: 8px auto 0;
+  color: var(--text-3);
+  font-size: 14.5px;
+  line-height: 1.6;
+}
+
+.next-steps {
+  display: grid;
+  gap: 2px;
+  margin: 26px 0;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: #fff;
+  list-style: none;
+  text-align: left;
+  box-shadow: var(--shadow-xs);
+}
+
+.next-steps li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 11px;
+}
+
+.next-steps li.is-current { background: var(--primary-soft); }
+
+.next-icon {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--surface-3);
+  color: var(--text-4);
+}
+
+.is-done .next-icon { background: var(--success-soft); color: var(--success); }
+.is-current .next-icon { background: #fff; color: var(--primary); }
+
+.next-steps strong {
+  display: block;
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 650;
+}
+
+.next-steps small {
+  display: block;
+  color: var(--text-3);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- Responsive ---------- */
+
+@media (max-width: 520px) {
+  .stepper { gap: 8px; }
+  .stepper-item:not(.is-active) .stepper-text { display: none; }
+
+  .field-grid { grid-template-columns: minmax(0, 1fr); }
+  .span-2 { grid-column: auto; }
+
+  .year-pills { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 </style>
