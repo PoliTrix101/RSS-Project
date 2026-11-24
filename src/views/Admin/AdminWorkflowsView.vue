@@ -372,6 +372,76 @@
 
         <section class="card">
           <div class="card-header">
+            <div><h3>Service history</h3><p>Every day an activity took place, newest first. Open a day to see who served and their before and after photos.</p></div>
+          </div>
+          <div v-if="serviceDays.length" class="card-body card-toolbar">
+            <div class="history-toolbar">
+              <label class="input-icon history-search">
+                <span class="sr-only">Search service history</span>
+                <AppIcon name="search" :size="16" />
+                <input v-model="serviceDaySearch" class="input" type="search" placeholder="Search by activity, area or student" autocomplete="off">
+              </label>
+              <label>
+                <span class="sr-only">Month</span>
+                <select v-model="serviceDayMonth" class="input history-month">
+                  <option value="">All months</option>
+                  <option v-for="month in serviceDayMonths" :key="month.value" :value="month.value">{{ month.label }}</option>
+                </select>
+              </label>
+            </div>
+            <span class="muted count">{{ filteredServiceDays.length }} {{ filteredServiceDays.length === 1 ? 'day' : 'days' }}</span>
+          </div>
+          <div class="table-wrap card-divider" :class="{ spaced: !serviceDays.length }">
+            <table class="table">
+              <thead><tr><th>Date</th><th>Activity</th><th>Time</th><th>Students</th><th>Photos</th><th class="cell-actions">Details</th></tr></thead>
+              <tbody>
+                <tr v-for="day in visibleServiceDays" :key="day.key">
+                  <td class="nowrap">
+                    <div class="person">
+                      <div class="date-tile date-tile-sm"><span>{{ dateParts(day.date).month }}</span><strong>{{ dateParts(day.date).day }}</strong></div>
+                      <div><span class="cell-strong">{{ weekdayLabel(day.date) }}</span><span class="cell-sub">{{ dateLabel(day.date) }}</span></div>
+                    </div>
+                  </td>
+                  <td class="cell-wrap">
+                    <span class="cell-strong">{{ day.activity.title }}</span>
+                    <span class="cell-sub">{{ activityPlace(day.activity) }}</span>
+                  </td>
+                  <td class="nowrap">{{ activityTimes(day.activity) }}</td>
+                  <td class="nowrap">
+                    <template v-if="day.studentCount">
+                      <span class="cell-strong">{{ day.studentCount }} {{ day.studentCount === 1 ? 'student' : 'students' }}</span>
+                      <span class="cell-sub">{{ hours(day.approvedHours) }} hrs approved<template v-if="day.pendingCount"> · {{ day.pendingCount }} pending</template></span>
+                    </template>
+                    <span v-else class="muted">No time logged</span>
+                  </td>
+                  <td class="nowrap">
+                    <span v-if="day.photoCount" class="photo-count"><AppIcon name="camera" :size="15" /> {{ day.photoCount }}</span>
+                    <span v-else class="muted">—</span>
+                  </td>
+                  <td class="cell-actions">
+                    <button class="btn btn-secondary btn-sm" type="button" @click="openServiceDay(day)"><AppIcon name="eye" :size="15" /> View day</button>
+                  </td>
+                </tr>
+                <tr v-if="filteredServiceDays.length === 0" class="table-empty">
+                  <td colspan="6">
+                    <EmptyState
+                      icon="calendar"
+                      :title="serviceDays.length ? 'No matching days' : 'No service days yet'"
+                      :text="serviceDays.length ? 'Try a different search or month.' : 'When an activity ends, the day it took place is listed here.'"
+                    />
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div v-if="filteredServiceDays.length > visibleServiceDays.length" class="card-footer">
+            <span>Showing {{ visibleServiceDays.length }} of {{ filteredServiceDays.length }} days</span>
+            <button class="btn btn-secondary btn-sm" type="button" @click="serviceDayLimit += SERVICE_DAY_STEP">Show more</button>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card-header">
             <div><h3>Student registrations</h3><p>Approve or reject students who signed up for an activity.</p></div>
           </div>
           <div class="card-body card-toolbar">
@@ -556,6 +626,61 @@
       </template>
     </AppModal>
 
+    <!-- SERVICE DAY -->
+    <AppModal
+      :open="serviceDay.open"
+      size="lg"
+      :eyebrow="serviceDay.day ? `${weekdayLabel(serviceDay.day.date)}, ${dateLabel(serviceDay.day.date)}` : ''"
+      :title="serviceDay.day ? serviceDay.day.activity.title : ''"
+      :subtitle="serviceDay.day ? `${activityPlace(serviceDay.day.activity)} · ${activityTimes(serviceDay.day.activity)}` : ''"
+      @close="closeServiceDay"
+    >
+      <template v-if="serviceDay.day">
+        <EmptyState
+          v-if="serviceDay.day.records.length === 0"
+          icon="clipboard-check"
+          title="No time logged for this day"
+          text="Registered students are reminded to log their time once the activity ends."
+        />
+        <div v-else class="table-wrap">
+          <table class="table">
+            <thead><tr><th>Student</th><th>Time</th><th>Hours</th><th>Photos</th><th>Status</th></tr></thead>
+            <tbody>
+              <tr v-for="record in serviceDay.day.records" :key="record.id">
+                <td>
+                  <div class="person">
+                    <span class="avatar avatar-sm">{{ initialsOf(record.student_name) }}</span>
+                    <div><span class="cell-strong">{{ record.student_name }}</span><span class="cell-sub">{{ record.student_number || '—' }}</span></div>
+                  </div>
+                </td>
+                <td class="nowrap">{{ formatTimeRange(record.time_in, record.time_out, '—') }}</td>
+                <td class="cell-num cell-strong">{{ hours(record.total_hours) }}</td>
+                <td class="nowrap">
+                  <div v-if="Number(record.has_before_photo) || Number(record.has_after_photo)" class="photo-pair">
+                    <template v-for="kind in ['before', 'after']" :key="kind">
+                      <AuthPhoto
+                        v-if="Number(record[`has_${kind}_photo`])"
+                        :src="`${API_URL}/admin/attendance/${encodeURIComponent(record.id)}/photos/${kind}`"
+                        :token="token"
+                        :label="`${titleCase(kind)} photo`"
+                        :caption="titleCase(kind)"
+                        :subtitle="`${record.student_name} · ${serviceDay.day.activity.title} · ${dateLabel(serviceDay.day.date)}`"
+                      />
+                    </template>
+                  </div>
+                  <span v-else class="muted">No photos</span>
+                </td>
+                <td><span :class="badgeClass(record.status)">{{ titleCase(record.status) }}</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </template>
+      <template #footer>
+        <button class="btn btn-secondary" type="button" @click="closeServiceDay">Close</button>
+      </template>
+    </AppModal>
+
     <!-- AREA FORM -->
     <AppModal
       :open="areaModalOpen"
@@ -629,7 +754,7 @@ import AuthPhoto from '@/components/AuthPhoto.vue'
 import { confirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { parseApiDate } from '@/utils/dates'
-import { badgeClass, formatSchedule, formatTimeRange, timeAgo, titleCase } from '@/utils/format'
+import { badgeClass, dateParts, formatSchedule, formatTimeRange, timeAgo, titleCase } from '@/utils/format'
 import { initialsOf, readSession } from '@/utils/session'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api'
@@ -680,6 +805,84 @@ const announcementModalOpen = ref(false)
 const participants = reactive({ open: false, loading: false, activity: null, rows: [] })
 const activeActivities = computed(() => activities.value.filter(activity => !activity.archived_at))
 const archivedActivities = computed(() => activities.value.filter(activity => activity.archived_at))
+
+// Service history: one row per day an activity took place. That is each date students
+// logged time for it, or, when an activity ended and nobody has logged time yet, its
+// scheduled date. Rejected attendance doesn't count as having served.
+const activityAttendance = ref([])
+const serviceDay = reactive({ open: false, day: null })
+const serviceDays = computed(() => {
+  const activityById = new Map(activities.value.map(activity => [activity.id, activity]))
+  const days = new Map()
+  const dayFor = (activity, date) => {
+    const key = `${activity.id}|${date}`
+    if (!days.has(key)) days.set(key, { key, date, activity, records: [] })
+    return days.get(key)
+  }
+  for (const record of activityAttendance.value) {
+    const activity = activityById.get(record.activity_id)
+    if (!activity || record.status === 'rejected') continue
+    dayFor(activity, String(record.attendance_date).slice(0, 10)).records.push(record)
+  }
+  const logged = new Set([...days.values()].map(day => day.activity.id))
+  for (const activity of activities.value) {
+    if (logged.has(activity.id) || !isDone(activity)) continue
+    dayFor(activity, String(activity.scheduled_start).slice(0, 10))
+  }
+  return [...days.values()]
+    .map(day => {
+      const records = [...day.records].sort((a, b) =>
+        String(a.time_in || '').localeCompare(String(b.time_in || '')) || byNaturalOrder(a.student_name, b.student_name))
+      return {
+        ...day,
+        records,
+        studentCount: new Set(records.map(record => record.student_id)).size,
+        approvedHours: records.reduce((sum, record) => sum + (record.status === 'approved' ? Number(record.total_hours) || 0 : 0), 0),
+        pendingCount: records.filter(record => record.status === 'pending').length,
+        photoCount: records.reduce((sum, record) => sum + Number(record.has_before_photo || 0) + Number(record.has_after_photo || 0), 0)
+      }
+    })
+    .sort((a, b) => b.date.localeCompare(a.date) ||
+      String(b.activity.scheduled_start).localeCompare(String(a.activity.scheduled_start)))
+})
+
+const serviceDaySearch = ref('')
+const serviceDayMonth = ref('')
+const monthFormat = new Intl.DateTimeFormat('en-PH', { month: 'long', year: 'numeric' })
+const serviceDayMonths = computed(() => [...new Set(serviceDays.value.map(day => day.date.slice(0, 7)))]
+  .map(value => {
+    const date = parseApiDate(`${value}-01`)
+    return { value, label: date ? monthFormat.format(date) : value }
+  }))
+const filteredServiceDays = computed(() => {
+  let rows = serviceDays.value
+  if (serviceDayMonth.value) rows = rows.filter(day => day.date.startsWith(serviceDayMonth.value))
+  const term = serviceDaySearch.value.trim().toLowerCase()
+  if (term) {
+    rows = rows.filter(day => [
+      day.activity.title, day.activity.service_area, day.activity.location,
+      ...day.records.flatMap(record => [record.student_name, record.student_number])
+    ].some(value => String(value || '').toLowerCase().includes(term)))
+  }
+  return rows
+})
+
+// The list shows SERVICE_DAY_STEP days at a time; a new search or month starts over.
+const SERVICE_DAY_STEP = 10
+const serviceDayLimit = ref(SERVICE_DAY_STEP)
+const visibleServiceDays = computed(() => filteredServiceDays.value.slice(0, serviceDayLimit.value))
+watch([serviceDaySearch, serviceDayMonth], () => { serviceDayLimit.value = SERVICE_DAY_STEP })
+watch(serviceDayMonths, months => {
+  if (serviceDayMonth.value && !months.some(month => month.value === serviceDayMonth.value)) serviceDayMonth.value = ''
+})
+
+function openServiceDay(day) {
+  Object.assign(serviceDay, { open: true, day })
+}
+
+function closeServiceDay() {
+  serviceDay.open = false
+}
 
 const activityForm = reactive({
   id: '', title: '', area_id: '', description: '', location: '',
@@ -880,7 +1083,7 @@ async function loadTab() {
   loading.value = true
   try {
     if (activeTab.value === 'attendance') await loadAttendance()
-    else if (activeTab.value === 'activities') await Promise.all([loadActivities(), loadRegistrations(), loadAreas()])
+    else if (activeTab.value === 'activities') await Promise.all([loadActivities(), loadRegistrations(), loadAreas(), loadActivityAttendance()])
     else if (activeTab.value === 'areas') await loadAllAreas()
     else if (activeTab.value === 'hours') {
       await Promise.all([loadStudents(), loadAdjustmentHistory()])
@@ -997,6 +1200,11 @@ async function saveArea() {
 
 async function loadActivities() {
   activities.value = (await request('/admin/activities')).activities
+}
+
+// Every attendance record, for the service history.
+async function loadActivityAttendance() {
+  activityAttendance.value = (await request('/admin/attendance')).attendance
 }
 
 async function loadRegistrations() {
@@ -1322,6 +1530,21 @@ function hours(value) {
   return Number.isFinite(number) ? Number(number.toFixed(2)).toString() : '0'
 }
 
+const weekdayFormat = new Intl.DateTimeFormat('en-PH', { weekday: 'long' })
+function weekdayLabel(value) {
+  const date = parseApiDate(value)
+  return date ? weekdayFormat.format(date) : ''
+}
+
+function activityPlace(activity) {
+  return [activity.service_area, activity.location].filter(Boolean).join(' · ')
+}
+
+// The clock times of an activity's schedule ('YYYY-MM-DDTHH:MM' wall-clock values).
+function activityTimes(activity) {
+  return formatTimeRange(String(activity.scheduled_start || '').slice(11, 16), String(activity.scheduled_end || '').slice(11, 16))
+}
+
 // Ticks every 30s so an activity flips to "In progress" / "Ended" without a page reload.
 const now = ref(Date.now())
 let clockTimer = null
@@ -1346,6 +1569,7 @@ watch(activeTab, () => {
   areaModalOpen.value = false
   announcementModalOpen.value = false
   participants.open = false
+  serviceDay.open = false
   if (token.value) loadTab()
 })
 onMounted(() => {
@@ -1371,6 +1595,13 @@ onBeforeUnmount(() => {
 .doc-name { display: block; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .schedule-cell { min-width: 180px; font-size: 13px; }
 .photo-pair { display: flex; gap: 8px; }
+.history-toolbar { display: flex; align-items: center; gap: 10px; flex: 1 1 420px; flex-wrap: wrap; }
+.history-search { flex: 1 1 240px; max-width: 420px; }
+.history-month { width: auto; min-width: 170px; }
+.date-tile-sm { width: 42px; height: 46px; }
+.date-tile-sm strong { font-size: 16px; }
+.photo-count { display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); font-weight: 600; }
+.photo-count svg { color: var(--text-4); }
 .status-cell { min-width: 120px; }
 .status-cell .badge { white-space: nowrap; }
 .reg-state { display: inline-flex; align-items: center; gap: 6px; color: var(--text-3); font-weight: 600; }
