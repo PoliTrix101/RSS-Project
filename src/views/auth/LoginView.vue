@@ -7,7 +7,7 @@
       <div class="brand-content">
 
         <div class="brand-logo">
-          <div class="logo-symbol">R</div>
+          <div class="logo-symbol"><AppIcon name="graduation-cap" :size="24" /></div>
           <div>
             <h2>RETURN OF SERVICE</h2>
             <span>MANAGEMENT SYSTEM</span>
@@ -31,17 +31,17 @@
 
           <div class="feature-list">
             <div class="feature">
-              <span class="feature-icon">✓</span>
+              <span class="feature-icon"><AppIcon name="check" :size="13" :stroke-width="2.6" /></span>
               <span>Track your service hours</span>
             </div>
 
             <div class="feature">
-              <span class="feature-icon">✓</span>
+              <span class="feature-icon"><AppIcon name="check" :size="13" :stroke-width="2.6" /></span>
               <span>Monitor your attendance</span>
             </div>
 
             <div class="feature">
-              <span class="feature-icon">✓</span>
+              <span class="feature-icon"><AppIcon name="check" :size="13" :stroke-width="2.6" /></span>
               <span>Manage your requirements</span>
             </div>
           </div>
@@ -63,7 +63,7 @@
       <div class="login-container">
 
         <div class="mobile-brand">
-          <div class="logo-symbol">R</div>
+          <div class="logo-symbol"><AppIcon name="graduation-cap" :size="24" /></div>
           <span>RETURN OF SERVICE</span>
         </div>
 
@@ -79,7 +79,7 @@
             <label for="email">Email Address</label>
 
             <div class="input-wrapper">
-              <span class="input-icon">✉</span>
+              <span class="input-icon"><AppIcon name="mail" :size="18" /></span>
               <input
                 id="email"
                 v-model="email"
@@ -100,7 +100,7 @@
             </div>
 
             <div class="input-wrapper">
-              <span class="input-icon">⌑</span>
+              <span class="input-icon"><AppIcon name="lock" :size="18" /></span>
               <input
                 id="password"
                 v-model="password"
@@ -113,6 +113,7 @@
               <button
                 type="button"
                 class="show-password"
+                :aria-label="showPassword ? 'Hide password' : 'Show password'"
                 @click="showPassword = !showPassword"
               >
                 {{ showPassword ? 'Hide' : 'Show' }}
@@ -130,14 +131,15 @@
             class="login-button"
             :disabled="isSubmitting"
           >
-            {{ isSubmitting ? 'Signing in...' : 'Sign In' }}
-            <span>→</span>
+            {{ isSubmitting ? 'Signing in…' : 'Sign In' }}
+            <AppIcon v-if="!isSubmitting" name="arrow-right" :size="18" />
           </button>
 
           <div
             v-if="message"
             class="message"
             :class="messageType"
+            :role="messageType === 'error' ? 'alert' : 'status'"
           >
             {{ message }}
           </div>
@@ -150,7 +152,7 @@
         </div>
 
         <div class="security-note">
-          <span>🔒</span>
+          <AppIcon name="shield" :size="14" />
           <p>Your account information is protected.</p>
         </div>
 
@@ -163,6 +165,7 @@
 <script setup>
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
+import AppIcon from '@/components/AppIcon.vue'
 
 const router = useRouter()
 
@@ -301,10 +304,9 @@ async function login() {
   display: grid;
   place-items: center;
   border-radius: 12px;
-  background: #3478f6;
+  background: linear-gradient(135deg, #3b82f6, #1d4ed8);
   color: white;
-  font-size: 25px;
-  font-weight: 800;
+  box-shadow: 0 8px 20px -8px rgba(37, 99, 235, 0.8);
 }
 
 .brand-logo h2 {
@@ -475,8 +477,13 @@ async function login() {
 }
 
 .input-icon {
+  display: grid;
+  place-items: center;
   color: #8b99ad;
-  font-size: 17px;
+}
+
+.input-wrapper:focus-within .input-icon {
+  color: #2563eb;
 }
 
 .input-wrapper input {
@@ -618,6 +625,10 @@ async function login() {
   margin-top: 65px;
   padding-top: 22px;
   border-top: 1px solid #e7ebf1;
+}
+
+.security-note {
+  color: #98a2b3;
 }
 
 .security-note p {

@@ -5,6 +5,7 @@ const cors = require('cors')
 const authRoutes = require('./routes/auth')
 const adminRoutes = require('./routes/admin')
 const studentRoutes = require('./routes/student')
+const { startActivityEndNotices } = require('./activity-end-notices')
 
 const app = express()
 
@@ -41,4 +42,5 @@ const PORT = process.env.PORT || 4000
 
 app.listen(PORT, () => {
   console.log(`RSS Backend running on http://localhost:${PORT}`)
+  startActivityEndNotices()
 })

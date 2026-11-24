@@ -5,6 +5,8 @@ const { randomInt, randomUUID } = require('crypto')
 const fs = require('fs')
 const db = require('../db')
 const { resolveDocumentPath, getDocumentMimeType } = require('../document-storage')
+const { nowInAppZone } = require('../app-time')
+const { PHOTO_KINDS, sendAttendancePhoto } = require('../attendance-photos')
 
 const router = express.Router()
 const requiredHours = 340
@@ -780,7 +782,9 @@ router.get('/attendance', async (req, res) => {
           s.title AS activity_title,
           a.status,
           a.admin_remarks,
-          a.created_at
+          a.created_at,
+          CASE WHEN a.before_photo_path IS NULL THEN 0 ELSE 1 END AS has_before_photo,
+          CASE WHEN a.after_photo_path IS NULL THEN 0 ELSE 1 END AS has_after_photo
         FROM attendance a
         JOIN users u ON u.id = a.student_id
         LEFT JOIN service_activities s ON s.id = a.activity_id
@@ -905,6 +909,28 @@ router.patch('/attendance/:id/approve', (req, res, next) => {
 
 router.patch('/attendance/:id/reject', (req, res, next) => {
   return reviewAttendance(req, res, 'rejected').catch(next)
+})
+
+router.get('/attendance/:id/photos/:kind', async (req, res) => {
+  const attendanceId = validateRecordId(req.params.id, res, 'Attendance')
+  if (!attendanceId) return
+  if (!PHOTO_KINDS.includes(req.params.kind)) {
+    return res.status(404).json({ success: false, message: 'Photo was not found.' })
+  }
+
+  try {
+    const result = await db.execute({
+      sql: 'SELECT before_photo_path, after_photo_path FROM attendance WHERE id = ?',
+      args: [attendanceId]
+    })
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Attendance record was not found.' })
+    }
+    return await sendAttendancePhoto(res, result.rows[0], req.params.kind)
+  } catch (error) {
+    console.error('Admin attendance photo error:', error)
+    return res.status(500).json({ success: false, message: 'Failed to load the photo.' })
+  }
 })
 
 router.get('/activity-areas', async (req, res) => {
@@ -1107,16 +1133,28 @@ router.get('/activities', async (req, res) => {
         a.registration_open,
         a.status,
         a.created_at,
+        a.archived_at,
+        a.ended_notified_at,
         s.area_name AS service_area,
-        COALESCE(r.registration_count, 0) AS registration_count
+        COALESCE(r.registration_count, 0) AS registration_count,
+        COALESCE(r.approved_count, 0) AS approved_count,
+        COALESCE(h.approved_hours, 0) AS approved_hours
       FROM service_activities a
       JOIN service_areas s ON s.id = a.area_id
       LEFT JOIN (
-        SELECT activity_id, COUNT(*) AS registration_count
+        SELECT
+          activity_id,
+          SUM(CASE WHEN status IN ('pending', 'approved') THEN 1 ELSE 0 END) AS registration_count,
+          SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) AS approved_count
         FROM activity_registrations
-        WHERE status IN ('pending', 'approved')
         GROUP BY activity_id
       ) r ON r.activity_id = a.id
+      LEFT JOIN (
+        SELECT activity_id, SUM(total_hours) AS approved_hours
+        FROM attendance
+        WHERE status = 'approved' AND activity_id IS NOT NULL
+        GROUP BY activity_id
+      ) h ON h.activity_id = a.id
       ORDER BY a.scheduled_start DESC
     `)
     return res.json({ success: true, activities: result.rows })
@@ -1449,6 +1487,141 @@ router.delete('/activities/:id', async (req, res) => {
   }
 })
 
+// Archiving hides a finished activity from the admin's active list and the student
+// browse list. Registrations and attendance stay, so the participant record survives.
+async function setActivityArchived(req, res, archive) {
+  const activityId = validateRecordId(req.params.id, res, 'Activity')
+  if (!activityId) return
+
+  try {
+    const result = await db.execute({
+      sql: `
+        SELECT
+          title,
+          archived_at,
+          CASE
+            WHEN status = 'cancelled' OR datetime(scheduled_end) <= datetime(?) THEN 1
+            ELSE 0
+          END AS is_finished
+        FROM service_activities
+        WHERE id = ?
+      `,
+      args: [nowInAppZone(), activityId]
+    })
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Service activity was not found.'
+      })
+    }
+
+    const activity = result.rows[0]
+    if (archive && !Number(activity.is_finished)) {
+      return res.status(409).json({
+        success: false,
+        message: 'Only activities that have ended or were cancelled can be archived.'
+      })
+    }
+    if (Boolean(activity.archived_at) === archive) {
+      return res.status(409).json({
+        success: false,
+        message: archive ? 'This activity is already archived.' : 'This activity is not archived.'
+      })
+    }
+
+    await db.execute({
+      sql: `
+        UPDATE service_activities
+        SET archived_at = ${archive ? 'CURRENT_TIMESTAMP' : 'NULL'}, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `,
+      args: [activityId]
+    })
+    await db.execute({
+      sql: `
+        INSERT INTO activity_logs (id, admin_id, action, reason)
+        VALUES (?, ?, ?, ?)
+      `,
+      args: [randomUUID(), req.admin.id, archive ? 'activity_archived' : 'activity_restored', activity.title]
+    })
+    return res.json({
+      success: true,
+      message: archive ? 'Activity moved to completed activities.' : 'Activity restored to the active list.'
+    })
+  } catch (error) {
+    console.error('Admin archive activity error:', error)
+    return res.status(500).json({
+      success: false,
+      message: archive ? 'Failed to archive service activity.' : 'Failed to restore service activity.'
+    })
+  }
+}
+
+router.patch('/activities/:id/archive', (req, res, next) => {
+  return setActivityArchived(req, res, true).catch(next)
+})
+
+router.patch('/activities/:id/restore', (req, res, next) => {
+  return setActivityArchived(req, res, false).catch(next)
+})
+
+router.get('/activities/:id/participants', async (req, res) => {
+  const activityId = validateRecordId(req.params.id, res, 'Activity')
+  if (!activityId) return
+
+  try {
+    const activity = await db.execute({
+      sql: 'SELECT id FROM service_activities WHERE id = ?',
+      args: [activityId]
+    })
+    if (activity.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Service activity was not found.'
+      })
+    }
+
+    // Everyone who registered, plus anyone who logged attendance against the
+    // activity without a registration row.
+    const result = await db.execute({
+      sql: `
+        SELECT
+          u.id AS student_id,
+          u.student_id AS student_number,
+          TRIM(u.first_name || ' ' || COALESCE(u.middle_name || ' ', '') || u.last_name) AS student_name,
+          r.status AS registration_status,
+          r.registered_at,
+          COALESCE(h.approved_hours, 0) AS approved_hours,
+          COALESCE(h.pending_hours, 0) AS pending_hours
+        FROM users u
+        LEFT JOIN activity_registrations r
+          ON r.student_id = u.id AND r.activity_id = ?
+        LEFT JOIN (
+          SELECT
+            student_id,
+            SUM(CASE WHEN status = 'approved' THEN total_hours ELSE 0 END) AS approved_hours,
+            SUM(CASE WHEN status = 'pending' THEN total_hours ELSE 0 END) AS pending_hours
+          FROM attendance
+          WHERE activity_id = ?
+          GROUP BY student_id
+        ) h ON h.student_id = u.id
+        WHERE r.id IS NOT NULL OR h.student_id IS NOT NULL
+        ORDER BY
+          CASE r.status WHEN 'approved' THEN 0 WHEN 'pending' THEN 1 WHEN 'rejected' THEN 3 WHEN 'cancelled' THEN 4 ELSE 2 END,
+          student_name
+      `,
+      args: [activityId, activityId]
+    })
+    return res.json({ success: true, participants: result.rows })
+  } catch (error) {
+    console.error('Admin activity participants error:', error)
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to load activity participants.'
+    })
+  }
+})
+
 router.get('/activity-registrations', async (req, res) => {
   const status = getOptionalQueryString(req.query.status, 'Status', 20, res)
   if (status === undefined) return
@@ -1589,6 +1762,38 @@ router.patch('/activity-registrations/:id/approve', (req, res, next) => {
 
 router.patch('/activity-registrations/:id/reject', (req, res, next) => {
   return reviewActivityRegistration(req, res, 'rejected').catch(next)
+})
+
+// Every adjustment across all students, with the student's course, year level and
+// section so the admin history table can filter them.
+router.get('/hour-adjustments', async (req, res) => {
+  try {
+    const result = await db.execute(`
+      SELECT
+        a.id,
+        a.student_id,
+        a.adjustment_amount,
+        a.adjustment_type,
+        a.reason,
+        a.created_at,
+        u.student_id AS student_number,
+        TRIM(u.first_name || ' ' || COALESCE(u.middle_name || ' ', '') || u.last_name) AS student_name,
+        u.course,
+        u.year_level,
+        s.section_name AS section
+      FROM hour_adjustments a
+      JOIN users u ON u.id = a.student_id
+      LEFT JOIN sections s ON s.id = u.section_id
+      ORDER BY a.created_at DESC
+    `)
+    return res.json({ success: true, adjustments: result.rows })
+  } catch (error) {
+    console.error('Admin hour adjustments error:', error)
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to load hour adjustments.'
+    })
+  }
 })
 
 router.get('/students/:id/hour-adjustments', async (req, res) => {

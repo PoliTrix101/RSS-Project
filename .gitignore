@@ -15,6 +15,7 @@ coverage
 *.local
 /Backend/.env
 /Backend/private_documents/
+/Backend/private_attendance_photos/
 
 # Editor directories and files
 .vscode/*

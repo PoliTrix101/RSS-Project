@@ -12,6 +12,13 @@ const {
   getDocumentMimeType
 } = require('../document-storage')
 const { todayInAppZone, nowInAppZone } = require('../app-time')
+const {
+  PHOTO_KINDS,
+  handleAttendancePhotos,
+  hasImageSignature,
+  photoFile,
+  sendAttendancePhoto
+} = require('../attendance-photos')
 
 const router = express.Router()
 const requiredHours = 340
@@ -68,7 +75,13 @@ const activitySelect = `
     r.status AS registration_status,
     COALESCE(registrations.active_count, 0) AS registration_count,
     COALESCE(completed.hours, 0) AS completed_hours,
-    CASE WHEN completed.activity_id IS NULL THEN 0 ELSE 1 END AS is_completed
+    CASE WHEN completed.activity_id IS NULL THEN 0 ELSE 1 END AS is_completed,
+    CASE WHEN EXISTS (
+      SELECT 1 FROM attendance t
+      WHERE t.activity_id = a.id
+        AND t.student_id = r.student_id
+        AND t.status IN ('pending', 'approved')
+    ) THEN 1 ELSE 0 END AS has_attendance
   FROM service_activities a
   JOIN service_areas s ON s.id = a.area_id
   LEFT JOIN activity_registrations r
@@ -340,7 +353,8 @@ router.get('/activities', async (req, res) => {
 
   const conditions = [
     "(a.status = 'published' OR r.id IS NOT NULL)",
-    '(date(a.scheduled_end) >= ? OR r.id IS NOT NULL)'
+    '(date(a.scheduled_end) >= ? OR r.id IS NOT NULL)',
+    '(a.archived_at IS NULL OR r.id IS NOT NULL)'
   ]
   const args = [req.student.id, req.student.id, todayInAppZone()]
   if (search) {
@@ -587,7 +601,9 @@ router.get('/attendance', async (req, res) => {
         sql: `
           SELECT a.id, a.attendance_date, a.time_in, a.time_out, a.total_hours,
             a.status, a.admin_remarks, a.created_at, a.activity_id,
-            s.title AS activity_title
+            s.title AS activity_title,
+            CASE WHEN a.before_photo_path IS NULL THEN 0 ELSE 1 END AS has_before_photo,
+            CASE WHEN a.after_photo_path IS NULL THEN 0 ELSE 1 END AS has_after_photo
           FROM attendance a
           LEFT JOIN service_activities s ON s.id = a.activity_id
           WHERE ${conditions.join(' AND ')}
@@ -619,7 +635,9 @@ router.get('/attendance', async (req, res) => {
   }
 })
 
-router.post('/attendance', async (req, res) => {
+// Sent as JSON, or as multipart form data when before_photo / after_photo are attached.
+// Attendance for an activity must include both photos; general service may include them.
+router.post('/attendance', handleAttendancePhotos, async (req, res) => {
   const body = req.body || {}
   const attendanceDate = body.attendance_date
   const timeIn = body.time_in
@@ -659,6 +677,31 @@ router.post('/attendance', async (req, res) => {
     return res.status(400).json({
       success: false,
       message: 'Time out must be later than time in on the same day.'
+    })
+  }
+
+  const beforePhoto = photoFile(req, 'before')
+  const afterPhoto = photoFile(req, 'after')
+  if (activityId && (!beforePhoto || !afterPhoto)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Activity attendance needs a before photo and an after photo.'
+    })
+  }
+  try {
+    for (const photo of [beforePhoto, afterPhoto].filter(Boolean)) {
+      if (!(await hasImageSignature(photo))) {
+        return res.status(400).json({
+          success: false,
+          message: 'A photo is not a valid JPEG, PNG, or WebP image.'
+        })
+      }
+    }
+  } catch (error) {
+    console.error('Attendance photo check error:', error)
+    return res.status(500).json({
+      success: false,
+      message: 'The uploaded photos could not be checked.'
     })
   }
 
@@ -712,11 +755,16 @@ router.post('/attendance', async (req, res) => {
     await transaction.execute({
       sql: `
         INSERT INTO attendance (
-          id, student_id, attendance_date, time_in, time_out, total_hours, status, activity_id
+          id, student_id, attendance_date, time_in, time_out, total_hours, status, activity_id,
+          before_photo_path, after_photo_path
         )
-        VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+        VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
       `,
-      args: [id, req.student.id, attendanceDate, timeIn, timeOut, totalHours, activityId]
+      args: [
+        id, req.student.id, attendanceDate, timeIn, timeOut, totalHours, activityId,
+        beforePhoto ? path.basename(beforePhoto.filename) : null,
+        afterPhoto ? path.basename(afterPhoto.filename) : null
+      ]
     })
     await transaction.commit()
     transaction = null
@@ -731,7 +779,9 @@ router.post('/attendance', async (req, res) => {
         time_out: timeOut,
         total_hours: totalHours,
         status: 'pending',
-        activity_id: activityId
+        activity_id: activityId,
+        has_before_photo: beforePhoto ? 1 : 0,
+        has_after_photo: afterPhoto ? 1 : 0
       }
     })
   } catch (error) {
@@ -747,6 +797,28 @@ router.post('/attendance', async (req, res) => {
       success: false,
       message: 'Failed to submit attendance.'
     })
+  }
+})
+
+router.get('/attendance/:id/photos/:kind', async (req, res) => {
+  const attendanceId = validateRecordId(req.params.id, res)
+  if (!attendanceId) return
+  if (!PHOTO_KINDS.includes(req.params.kind)) {
+    return res.status(404).json({ success: false, message: 'Photo was not found.' })
+  }
+
+  try {
+    const result = await db.execute({
+      sql: 'SELECT before_photo_path, after_photo_path FROM attendance WHERE id = ? AND student_id = ?',
+      args: [attendanceId, req.student.id]
+    })
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Attendance record was not found.' })
+    }
+    return await sendAttendancePhoto(res, result.rows[0], req.params.kind)
+  } catch (error) {
+    console.error('Student attendance photo error:', error)
+    return res.status(500).json({ success: false, message: 'Failed to load the photo.' })
   }
 })
 
