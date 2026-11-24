@@ -4,28 +4,16 @@
     <div class="forgot-card">
       <div class="logo">RSS</div>
 
-      <h1>Forgot Password?</h1>
+      <h1>Forgot your password?</h1>
       <p class="description">
-        Enter your registered school email address. We'll help you recover your account.
+        Passwords are reset by your RSS administrator. They will give you a temporary password.
       </p>
 
-      <form @submit.prevent="resetPassword">
-        <div class="form-group">
-          <label>School Email Address</label>
-          <input
-            v-model="email"
-            type="email"
-            placeholder="Enter your email"
-            required
-          />
-        </div>
-
-        <button type="submit" class="submit-button">
-          Request Password Reset
-        </button>
-      </form>
-
-      <p v-if="message" class="message">{{ message }}</p>
+      <ol class="steps">
+        <li>Ask your RSS administrator to reset your password.</li>
+        <li>Sign in with the temporary password they give you.</li>
+        <li>Open <strong>Settings</strong> and choose a new password.</li>
+      </ol>
 
       <router-link to="/login" class="back-link">
         ← Back to Login
@@ -33,17 +21,6 @@
     </div>
   </div>
 </template>
-
-<script setup>
-import { ref } from 'vue'
-
-const email = ref('')
-const message = ref('')
-
-function resetPassword() {
-  message.value = 'Password recovery will be connected to the backend later.'
-}
-</script>
 
 <style scoped>
 .forgot-page {
@@ -63,6 +40,8 @@ function resetPassword() {
   background: #1e293b;
   border: 1px solid #334155;
   border-radius: 16px;
+  color: #f1f5f9;
+  font-family: Inter, Arial, sans-serif;
 }
 
 .logo {
@@ -73,52 +52,37 @@ function resetPassword() {
   margin: 0 auto 22px;
   background: #2563eb;
   border-radius: 14px;
+  color: #fff;
   font-size: 20px;
   font-weight: 800;
 }
 
 h1 {
+  margin: 0 0 12px;
   font-size: 23px;
-  margin-bottom: 12px;
 }
 
 .description {
+  margin: 0 0 22px;
   color: #94a3b8;
   font-size: 13px;
   line-height: 1.7;
-  margin-bottom: 28px;
 }
 
-.form-group {
+.steps {
+  margin: 0;
+  padding: 16px 18px 16px 36px;
   text-align: left;
-  margin-bottom: 20px;
-}
-
-.form-group label {
-  display: block;
-  margin-bottom: 9px;
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  color: #cbd5e1;
   font-size: 13px;
-  font-weight: 600;
+  line-height: 1.8;
 }
 
-.submit-button {
-  width: 100%;
-  padding: 13px;
-  border: none;
-  border-radius: 8px;
-  background: #2563eb;
-  color: white;
-  font-weight: 700;
-}
-
-.submit-button:hover {
-  background: #1d4ed8;
-}
-
-.message {
-  margin-top: 18px;
-  color: #93c5fd;
-  font-size: 13px;
+.steps strong {
+  color: #f1f5f9;
 }
 
 .back-link {

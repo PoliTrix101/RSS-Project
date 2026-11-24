@@ -1,6 +1,7 @@
 const express = require('express')
+const bcrypt = require('bcryptjs')
 const jwt = require('jsonwebtoken')
-const { randomUUID } = require('crypto')
+const { randomInt, randomUUID } = require('crypto')
 const fs = require('fs')
 const db = require('../db')
 const { resolveDocumentPath, getDocumentMimeType } = require('../document-storage')
@@ -112,8 +113,19 @@ function validateRecordId(value, res, label = 'Record') {
   return value.trim()
 }
 
+// Activity times are local wall-clock values from a datetime-local input
+// (YYYY-MM-DDTHH:MM). The student routes compare them with the local time in SQL,
+// so a time zone suffix or any other format would be compared incorrectly.
 function isValidSchedule(value) {
-  return typeof value === 'string' && value.length <= 40 && Number.isFinite(Date.parse(value))
+  const match = typeof value === 'string' &&
+    value.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/)
+  if (!match) return false
+
+  const [year, month, day, hour, minute, second] = match.slice(1).map(part => Number(part || 0))
+  const date = new Date(Date.UTC(year, month - 1, day, hour, minute, second))
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day && date.getUTCHours() === hour &&
+    date.getUTCMinutes() === minute && date.getUTCSeconds() === second
 }
 
 function isValidCalendarDate(value) {
@@ -165,7 +177,10 @@ async function getHourProgress(studentId, executor = db) {
     requiredHours,
     completedHours,
     remainingHours,
-    completionPercentage: Number(((completedHours / requiredHours) * 100).toFixed(2))
+    completionPercentage: Math.min(
+      100,
+      Number(((completedHours / requiredHours) * 100).toFixed(2))
+    )
   }
 }
 
@@ -648,6 +663,90 @@ router.patch('/students/:id/enable', (req, res) => {
   return changeStudentStatus(req, res, 'approved', 'disabled', 'student_enabled')
 })
 
+// No look-alike characters (0/O, 1/l/I), so the password is easy to read out and type.
+const temporaryPasswordAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789'
+
+function createTemporaryPassword(length = 12) {
+  let password = ''
+  for (let index = 0; index < length; index++) {
+    password += temporaryPasswordAlphabet[randomInt(temporaryPasswordAlphabet.length)]
+  }
+  return password
+}
+
+router.patch('/students/:id/reset-password', async (req, res) => {
+  const studentId = validateStudentId(req.params.id, res)
+  if (!studentId) return
+
+  let transaction
+  try {
+    const temporaryPassword = createTemporaryPassword()
+    // Hash before taking the write lock: bcrypt is deliberately slow.
+    const passwordHash = await bcrypt.hash(temporaryPassword, 12)
+
+    transaction = await db.transaction('write')
+    const update = await transaction.execute({
+      sql: `
+        UPDATE users
+        SET password_hash = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND role = 'student'
+      `,
+      args: [passwordHash, studentId]
+    })
+    if (Number(update.rowsAffected) === 0) {
+      await transaction.rollback()
+      transaction = null
+      return res.status(404).json({
+        success: false,
+        message: 'Student account was not found.'
+      })
+    }
+
+    await transaction.execute({
+      sql: `
+        INSERT INTO activity_logs (id, admin_id, student_id, action, reason)
+        VALUES (?, ?, ?, 'student_password_reset', NULL)
+      `,
+      args: [randomUUID(), req.admin.id, studentId]
+    })
+    await transaction.execute({
+      sql: `
+        INSERT INTO notifications (id, user_id, title, message)
+        VALUES (?, ?, ?, ?)
+      `,
+      args: [
+        randomUUID(),
+        studentId,
+        'Password reset',
+        'An administrator reset your password. Sign in with the temporary password they gave you, then choose a new one under Settings.'
+      ]
+    })
+    await transaction.commit()
+    transaction = null
+
+    // The admin sees the temporary password only in this response, so it must never be cached.
+    res.set('Cache-Control', 'no-store')
+    return res.json({
+      success: true,
+      message: 'Password reset. Give the temporary password to the student.',
+      temporaryPassword
+    })
+  } catch (error) {
+    if (transaction) {
+      try {
+        await transaction.rollback()
+      } catch (rollbackError) {
+        console.error('Failed to roll back password reset:', rollbackError)
+      }
+    }
+    console.error('Student password reset error:', error)
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to reset the student password.'
+    })
+  }
+})
+
 router.get('/attendance', async (req, res) => {
   const status = getOptionalQueryString(req.query.status, 'Status', 20, res)
   if (status === undefined) return
@@ -793,7 +892,10 @@ async function reviewAttendance(req, res, nextStatus) {
       }
     }
     console.error('Attendance review error:', error)
-    return next(error)
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to review attendance.'
+    })
   }
 }
 
@@ -819,6 +921,171 @@ router.get('/activity-areas', async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Failed to load service areas.'
+    })
+  }
+})
+
+router.get('/service-areas', async (req, res) => {
+  try {
+    const result = await db.execute(`
+      SELECT id, area_name, description, location, status, created_at
+      FROM service_areas
+      ORDER BY CASE WHEN status = 'active' THEN 0 ELSE 1 END, area_name
+    `)
+    return res.json({ success: true, areas: result.rows })
+  } catch (error) {
+    console.error('Admin service area management list error:', error)
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to load service areas.'
+    })
+  }
+})
+
+function readServiceArea(body, current = {}) {
+  const pick = field => (body[field] === undefined ? current[field] : body[field])
+  const areaName = pick('area_name')
+  const description = pick('description')
+  const location = pick('location')
+  const status = pick('status') || 'active'
+
+  if (typeof areaName !== 'string' || !areaName.trim() || areaName.trim().length > 100) {
+    return { error: 'Service area name is required and must be no longer than 100 characters.' }
+  }
+  if (description != null && (typeof description !== 'string' || description.trim().length > 500)) {
+    return { error: 'Service area description must be text no longer than 500 characters.' }
+  }
+  if (location != null && (typeof location !== 'string' || location.trim().length > 250)) {
+    return { error: 'Service area location must be text no longer than 250 characters.' }
+  }
+  if (!['active', 'inactive'].includes(status)) {
+    return { error: 'Service area status must be active or inactive.' }
+  }
+
+  return {
+    area: {
+      area_name: areaName.trim(),
+      description: description ? description.trim() || null : null,
+      location: location ? location.trim() || null : null,
+      status
+    }
+  }
+}
+
+router.post('/service-areas', async (req, res) => {
+  const { area, error: validationError } = readServiceArea(req.body || {})
+  if (validationError) {
+    return res.status(400).json({
+      success: false,
+      message: validationError
+    })
+  }
+
+  try {
+    const duplicate = await db.execute({
+      sql: 'SELECT id FROM service_areas WHERE lower(area_name) = lower(?)',
+      args: [area.area_name]
+    })
+    if (duplicate.rows.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: 'A service area with this name already exists.'
+      })
+    }
+
+    const id = randomUUID()
+    await db.execute({
+      sql: `
+        INSERT INTO service_areas (id, area_name, description, location, status)
+        VALUES (?, ?, ?, ?, ?)
+      `,
+      args: [id, area.area_name, area.description, area.location, area.status]
+    })
+    await db.execute({
+      sql: `
+        INSERT INTO activity_logs (id, admin_id, action, reason)
+        VALUES (?, ?, 'service_area_created', ?)
+      `,
+      args: [randomUUID(), req.admin.id, area.area_name]
+    })
+    return res.status(201).json({
+      success: true,
+      message: 'Service area added.',
+      id
+    })
+  } catch (error) {
+    console.error('Admin create service area error:', error)
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to add service area.'
+    })
+  }
+})
+
+router.patch('/service-areas/:id', async (req, res) => {
+  const areaId = validateRecordId(req.params.id, res, 'Service area')
+  if (!areaId) return
+  const body = req.body || {}
+  const fields = Object.keys(body)
+  if (fields.length === 0 || fields.some(field => !['area_name', 'description', 'location', 'status'].includes(field))) {
+    return res.status(400).json({
+      success: false,
+      message: 'Service area update fields are invalid.'
+    })
+  }
+
+  try {
+    const currentResult = await db.execute({
+      sql: 'SELECT area_name, description, location, status FROM service_areas WHERE id = ?',
+      args: [areaId]
+    })
+    if (currentResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Service area was not found.'
+      })
+    }
+
+    const { area, error: validationError } = readServiceArea(body, currentResult.rows[0])
+    if (validationError) {
+      return res.status(400).json({
+        success: false,
+        message: validationError
+      })
+    }
+
+    const duplicate = await db.execute({
+      sql: 'SELECT id FROM service_areas WHERE lower(area_name) = lower(?) AND id <> ?',
+      args: [area.area_name, areaId]
+    })
+    if (duplicate.rows.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: 'A service area with this name already exists.'
+      })
+    }
+
+    await db.execute({
+      sql: `
+        UPDATE service_areas
+        SET area_name = ?, description = ?, location = ?, status = ?
+        WHERE id = ?
+      `,
+      args: [area.area_name, area.description, area.location, area.status, areaId]
+    })
+    await db.execute({
+      sql: `
+        INSERT INTO activity_logs (id, admin_id, action, reason)
+        VALUES (?, ?, 'service_area_updated', ?)
+      `,
+      args: [randomUUID(), req.admin.id, area.area_name]
+    })
+    return res.json({ success: true, message: 'Service area updated.' })
+  } catch (error) {
+    console.error('Admin update service area error:', error)
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to update service area.'
     })
   }
 })
@@ -883,7 +1150,7 @@ router.post('/activities', async (req, res) => {
       Date.parse(body.scheduled_start) >= Date.parse(body.scheduled_end)) {
     return res.status(400).json({
       success: false,
-      message: 'Activity schedule must contain valid start and end dates, with the end after the start.'
+      message: 'Activity start and end must use the YYYY-MM-DDTHH:MM format, with the end after the start.'
     })
   }
 
@@ -1037,7 +1304,7 @@ router.patch('/activities/:id', async (req, res) => {
         Date.parse(value.scheduled_start) >= Date.parse(value.scheduled_end)) {
       return res.status(400).json({
         success: false,
-        message: 'Activity schedule is invalid.'
+        message: 'Activity start and end must use the YYYY-MM-DDTHH:MM format, with the end after the start.'
       })
     }
     value.required_hours = Number(value.required_hours)
@@ -1309,7 +1576,10 @@ async function reviewActivityRegistration(req, res, nextStatus) {
       }
     }
     console.error('Activity registration review error:', error)
-    return next(error)
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to review activity registration.'
+    })
   }
 }
 
@@ -2093,7 +2363,10 @@ async function reviewStudentDocument(req, res, nextStatus) {
       }
     }
     console.error('Document review error:', error)
-    return next(error)
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to review document.'
+    })
   }
 }
 

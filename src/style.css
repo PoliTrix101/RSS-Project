@@ -1,0 +1,4 @@
+/* Remove the browser's default 8px page margin so full-height layouts fit the window. */
+body {
+  margin: 0;
+}

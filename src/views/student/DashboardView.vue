@@ -216,7 +216,7 @@
           <section class="content-card form-card">
             <h3>Submit attendance</h3>
             <form class="form-grid" @submit.prevent="submitAttendance">
-              <label><span>Attendance date</span><input v-model="attendanceForm.attendance_date" type="date" :max="today" required></label>
+              <label><span>Attendance date</span><input v-model="attendanceForm.attendance_date" type="date" :max="localDateString()" required></label>
               <label><span>Time in</span><input v-model="attendanceForm.time_in" type="time" required></label>
               <label><span>Time out</span><input v-model="attendanceForm.time_out" type="time" required></label>
               <label>
@@ -239,7 +239,7 @@
                 {{ saving ? 'Submitting…' : 'Submit for review' }}
               </button>
             </form>
-            <p class="form-note">Only approved attendance contributes to completed service hours. One record per date is allowed.</p>
+            <p class="form-note">Only approved attendance contributes to completed service hours. You can have one pending or approved record per date; a rejected date can be submitted again.</p>
           </section>
           <section class="content-card">
             <div class="card-heading"><div><h3>Attendance history</h3><p>Read any administrator remarks on reviewed records.</p></div></div>
@@ -488,6 +488,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { localDateString, parseApiDate } from '@/utils/dates'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api'
 const router = useRouter()
@@ -528,7 +529,7 @@ const notificationFilter = ref('')
 const attendanceFilters = reactive({ status: '', from: '', to: '', search: '' })
 const hoursFilters = reactive({ status: '', from: '', to: '', search: '' })
 const attendanceForm = reactive({
-  attendance_date: new Date().toISOString().slice(0, 10),
+  attendance_date: localDateString(),
   time_in: '',
   time_out: '',
   activity_id: ''
@@ -538,7 +539,6 @@ const documentFileInput = ref(null)
 const profileForm = reactive({ first_name: '', middle_name: '', last_name: '', contact_number: '' })
 const passwordForm = reactive({ currentPassword: '', newPassword: '', confirmPassword: '' })
 
-const today = new Date().toISOString().slice(0, 10)
 const displayName = computed(() => {
   const person = profile.value || dashboard.value?.profile
   return person
@@ -728,10 +728,10 @@ async function loadActivities() {
 }
 
 function canRegister(activity) {
-  const start = new Date(activity.scheduled_start)
+  const start = parseApiDate(activity.scheduled_start)
   return activity.activity_status === 'published' &&
     Number(activity.registration_open) === 1 &&
-    !Number.isNaN(start.getTime()) &&
+    start !== null &&
     start > new Date()
 }
 
@@ -944,18 +944,15 @@ function formatHours(value) {
 
 function formatDate(value) {
   if (!value) return '—'
-  const text = String(value)
-  const date = /^\d{4}-\d{2}-\d{2}$/.test(text)
-    ? new Date(`${text}T00:00:00`)
-    : new Date(text)
-  if (Number.isNaN(date.getTime())) return text
+  const date = parseApiDate(value)
+  if (!date) return String(value)
   return new Intl.DateTimeFormat('en-PH', { year: 'numeric', month: 'short', day: 'numeric' }).format(date)
 }
 
 function formatDateTime(value) {
   if (!value) return '—'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
+  const date = parseApiDate(value)
+  if (!date) return String(value)
   return new Intl.DateTimeFormat('en-PH', {
     year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
   }).format(date)

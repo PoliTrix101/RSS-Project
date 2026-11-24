@@ -31,7 +31,7 @@ const router = createRouter({
     },
     {
       path: '/admin/dashboard',
-      component: () => import('./views/admin/DashboardView.vue')
+      component: () => import('./views/Admin/DashboardView.vue')
     },
     {
       path: '/admin/students',

@@ -25,8 +25,29 @@
         <button class="nav-item active" type="button" aria-current="page">
           <span>♙</span> Student Management
         </button>
+        <button class="nav-item" type="button" @click="goToWorkflow('attendance')">
+          <span>▣</span> Attendance
+        </button>
+        <button class="nav-item" type="button" @click="goToWorkflow('hours')">
+          <span>◷</span> Service Hours
+        </button>
         <p class="nav-label">MANAGEMENT</p>
-        <p class="nav-note">Other administration modules are not available yet.</p>
+        <button class="nav-item" type="button" @click="goToWorkflow('activities')">
+          <span>✦</span> Service Activities
+        </button>
+        <button class="nav-item" type="button" @click="goToWorkflow('areas')">
+          <span>⌖</span> Service Areas
+        </button>
+        <button class="nav-item" type="button" @click="goToWorkflow('documents')">
+          <span>▤</span> Documents
+        </button>
+        <button class="nav-item" type="button" @click="goToWorkflow('assignments')">
+          <span>⌂</span> Cleaning Assignments
+        </button>
+        <p class="nav-label">SYSTEM</p>
+        <button class="nav-item" type="button" @click="goToWorkflow('announcements')">
+          <span>♧</span> Announcements
+        </button>
       </nav>
 
       <div class="sidebar-bottom">
@@ -210,6 +231,14 @@
                       </button>
                       <button
                         v-if="student.account_status === 'approved'"
+                        class="button-small button-view"
+                        type="button"
+                        @click="openActionDialog('reset-password', student)"
+                      >
+                        Reset password
+                      </button>
+                      <button
+                        v-if="student.account_status === 'approved'"
                         class="button-small button-disable"
                         type="button"
                         @click="openActionDialog('disable', student)"
@@ -359,20 +388,42 @@
       </section>
     </div>
 
-    <div v-if="actionDialog.open" class="modal-backdrop" @click.self="closeActionDialog">
+    <div v-if="actionDialog.open" class="modal-backdrop" @click.self="temporaryPassword || closeActionDialog()">
       <section class="modal action-modal" role="dialog" aria-modal="true" aria-labelledby="action-title">
         <header class="modal-header">
           <div>
-            <p class="eyebrow">CONFIRM ACCOUNT ACTION</p>
+            <p class="eyebrow">{{ temporaryPassword ? 'PASSWORD RESET' : 'CONFIRM ACCOUNT ACTION' }}</p>
             <h2 id="action-title">{{ actionTitle }}</h2>
           </div>
           <button class="icon-button" type="button" aria-label="Close confirmation" @click="closeActionDialog">×</button>
         </header>
-        <div class="modal-body">
+        <div v-if="temporaryPassword" class="modal-body">
+          <p class="confirmation-copy">
+            Temporary password for <strong>{{ actionDialog.student?.full_name }}</strong>:
+          </p>
+          <div class="temporary-password">
+            <code>{{ temporaryPassword }}</code>
+            <button class="button-secondary" type="button" @click="copyTemporaryPassword">
+              {{ passwordCopied ? 'Copied' : 'Copy' }}
+            </button>
+          </div>
+          <p class="password-note">
+            It is shown only once. Give it to the student privately and ask them to choose a new
+            password under Settings after they sign in.
+          </p>
+          <p v-if="actionError" class="inline-error" role="alert">{{ actionError }}</p>
+          <div class="modal-actions">
+            <button class="button-primary" type="button" @click="closeActionDialog">Done</button>
+          </div>
+        </div>
+        <div v-else class="modal-body">
           <p class="confirmation-copy">
             {{ actionDescription }}
             <strong>{{ actionDialog.student?.full_name }}</strong>
             ({{ actionDialog.student?.student_id || 'No student ID' }})?
+          </p>
+          <p v-if="actionDialog.action === 'reset-password'" class="password-note">
+            Their current password stops working right away.
           </p>
           <label v-if="actionDialog.action === 'reject'" class="reason-field">
             <span>Reason (optional)</span>
@@ -402,6 +453,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { parseApiDate } from '@/utils/dates'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api'
 const router = useRouter()
@@ -423,6 +475,8 @@ const actionLoading = ref(false)
 const actionError = ref('')
 const actionReason = ref('')
 const actionDialog = reactive({ open: false, action: '', student: null })
+const temporaryPassword = ref('')
+const passwordCopied = ref(false)
 let searchTimeout
 let latestListRequest = 0
 
@@ -432,13 +486,15 @@ const actionTitle = computed(() => ({
   approve: 'Approve registration',
   reject: 'Reject registration',
   disable: 'Disable account',
-  enable: 'Re-enable account'
+  enable: 'Re-enable account',
+  'reset-password': 'Reset password'
 }[actionDialog.action] || 'Confirm action'))
 const actionDescription = computed(() => ({
   approve: 'Approve the registration for',
   reject: 'Reject the registration for',
   disable: 'Disable the account for',
-  enable: 'Re-enable the account for'
+  enable: 'Re-enable the account for',
+  'reset-password': 'Create a new temporary password for'
 }[actionDialog.action] || 'Apply this change to'))
 
 function readSession() {
@@ -532,8 +588,8 @@ function formatStatus(status) {
 
 function formatDate(value) {
   if (!value) return '—'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
+  const date = parseApiDate(value)
+  if (!date) return String(value)
   return new Intl.DateTimeFormat('en-PH', {
     year: 'numeric',
     month: 'short',
@@ -573,6 +629,8 @@ function openActionDialog(action, student) {
   actionDialog.open = true
   actionError.value = ''
   actionReason.value = ''
+  temporaryPassword.value = ''
+  passwordCopied.value = false
 }
 
 function closeActionDialog() {
@@ -581,6 +639,8 @@ function closeActionDialog() {
   actionDialog.student = null
   actionReason.value = ''
   actionError.value = ''
+  temporaryPassword.value = ''
+  passwordCopied.value = false
 }
 
 async function confirmAction() {
@@ -597,6 +657,11 @@ async function confirmAction() {
       { method: 'PATCH', body }
     )
     successMessage.value = result.message
+    if (actionDialog.action === 'reset-password') {
+      // Keep the dialog open: this is the only time the temporary password is shown.
+      temporaryPassword.value = result.temporaryPassword
+      return
+    }
     actionDialog.open = false
     actionDialog.student = null
     await loadStudents()
@@ -607,8 +672,44 @@ async function confirmAction() {
   }
 }
 
+async function copyTemporaryPassword() {
+  actionError.value = ''
+  let copied = false
+  try {
+    await navigator.clipboard.writeText(temporaryPassword.value)
+    copied = true
+  } catch {
+    // navigator.clipboard doesn't exist on plain-http sites (e.g. a school intranet IP).
+    copied = copyWithSelection(temporaryPassword.value)
+  }
+  passwordCopied.value = copied
+  if (!copied) actionError.value = 'Copy failed. Select the password and copy it manually.'
+}
+
+function copyWithSelection(text) {
+  const field = document.createElement('textarea')
+  field.value = text
+  field.setAttribute('readonly', '')
+  field.style.position = 'fixed'
+  field.style.opacity = '0'
+  document.body.appendChild(field)
+  field.select()
+  let copied = false
+  try {
+    copied = document.execCommand('copy')
+  } catch {
+    copied = false
+  }
+  field.remove()
+  return copied
+}
+
 function goToDashboard() {
   router.push('/admin/dashboard')
+}
+
+function goToWorkflow(module) {
+  router.push(`/admin/workflows/${module}`)
 }
 
 function logout() {
@@ -732,6 +833,8 @@ onBeforeUnmount(() => {
 
 .sidebar-nav {
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   padding-top: 20px;
 }
 
@@ -773,13 +876,6 @@ onBeforeUnmount(() => {
 
 .nav-item.active {
   box-shadow: inset 3px 0 #4d91ff;
-}
-
-.nav-note {
-  margin: 0 10px;
-  color: #93a5c0;
-  font-size: 10px;
-  line-height: 1.6;
 }
 
 .sidebar-bottom {
@@ -1368,6 +1464,34 @@ tbody tr:hover {
 
 .confirmation-copy strong {
   color: #26364d;
+}
+
+.temporary-password {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid #dce5f2;
+  border-radius: 8px;
+  background: #f5f8fd;
+}
+
+.temporary-password code {
+  color: #1d2b40;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  user-select: all;
+}
+
+.password-note {
+  margin-top: 12px;
+  color: #7a8699;
+  font-size: 11px;
+  line-height: 1.6;
 }
 
 .reason-field {

@@ -53,6 +53,7 @@
           <div class="intro"><h2>Service activities</h2><p>Create activities, publish registration, and review student registrations.</p></div>
           <form class="card form-grid" @submit.prevent="saveActivity">
             <h3>{{ activityForm.id ? 'Edit activity' : 'Create activity' }}</h3>
+            <p v-if="areas.length === 0" class="note wide">No active service areas yet. <button class="text-button" type="button" @click="selectTab('areas')">Add one in Service Areas</button></p>
             <label><span>Title</span><input v-model="activityForm.title" maxlength="160" required></label>
             <label><span>Service area</span><select v-model="activityForm.area_id" required><option value="">Select an area</option><option v-for="area in areas" :key="area.id" :value="area.id">{{ area.area_name }}</option></select></label>
             <label><span>Location (optional override)</span><input v-model="activityForm.location" maxlength="250"></label>
@@ -90,10 +91,27 @@
           </section>
         </section>
 
+        <section v-else-if="activeTab === 'areas'" class="page-content">
+          <div class="intro"><h2>Service areas</h2><p>Activities and cleaning assignments use an active service area. Inactive areas stay on existing records but can't be picked for new ones.</p></div>
+          <form class="card form-grid" @submit.prevent="saveArea">
+            <h3>{{ areaForm.id ? 'Edit service area' : 'Add service area' }}</h3>
+            <label><span>Name</span><input v-model="areaForm.area_name" maxlength="100" required></label>
+            <label><span>Location (optional)</span><input v-model="areaForm.location" maxlength="250"></label>
+            <label><span>Status</span><select v-model="areaForm.status"><option value="active">Active</option><option value="inactive">Inactive</option></select></label>
+            <label class="wide"><span>Description (optional)</span><textarea v-model="areaForm.description" maxlength="500" rows="2"></textarea></label>
+            <div class="form-actions"><button class="primary-button" :disabled="saving">{{ saving ? 'Saving…' : areaForm.id ? 'Save changes' : 'Add area' }}</button><button v-if="areaForm.id" class="secondary-button" type="button" @click="resetAreaForm">Cancel edit</button></div>
+          </form>
+          <section class="card"><h3>All service areas</h3><div class="table-wrap"><table><thead><tr><th>Name</th><th>Location</th><th>Description</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+            <tr v-for="area in allAreas" :key="area.id"><td>{{ area.area_name }}</td><td>{{ area.location || '—' }}</td><td>{{ area.description || '—' }}</td><td><span class="badge" :class="`status-${area.status}`">{{ titleCase(area.status) }}</span></td><td class="actions"><button class="text-button" @click="editArea(area)">Edit</button></td></tr>
+            <tr v-if="allAreas.length === 0"><td colspan="5" class="empty">No service areas yet. Add one above to create activities and assignments.</td></tr>
+          </tbody></table></div></section>
+        </section>
+
         <section v-else-if="activeTab === 'assignments'" class="page-content">
           <div class="intro"><h2>Cleaning assignments</h2><p>Assign an active service area and notify the student.</p></div>
           <form class="card form-grid compact-form" @submit.prevent="createAssignment">
-            <label><span>Student</span><select v-model="assignmentForm.student_id" required><option value="">Select student</option><option v-for="student in students" :key="student.id" :value="student.id">{{ student.full_name }} · {{ student.student_id }}</option></select></label>
+            <p v-if="areas.length === 0" class="note wide">No active service areas yet. <button class="text-button" type="button" @click="selectTab('areas')">Add one in Service Areas</button></p>
+            <label><span>Student</span><select v-model="assignmentForm.student_id" required><option value="">Select approved student</option><option v-for="student in assignableStudents" :key="student.id" :value="student.id">{{ student.full_name }} · {{ student.student_id }}</option></select></label>
             <label><span>Service area</span><select v-model="assignmentForm.area_id" required><option value="">Select area</option><option v-for="area in areas" :key="area.id" :value="area.id">{{ area.area_name }}</option></select></label>
             <label><span>Assigned date</span><input v-model="assignmentForm.assigned_date" type="date" required></label>
             <label><span>Start time</span><input v-model="assignmentForm.schedule_start" type="time"></label>
@@ -156,6 +174,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { parseApiDate } from '@/utils/dates'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api'
 const route = useRoute()
@@ -164,6 +183,7 @@ const tabs = [
   { id: 'attendance', label: 'Attendance', icon: '▣' },
   { id: 'hours', label: 'Service Hours', icon: '◷' },
   { id: 'activities', label: 'Service Activities', icon: '✦' },
+  { id: 'areas', label: 'Service Areas', icon: '⌖' },
   { id: 'assignments', label: 'Cleaning Assignments', icon: '⌂' },
   { id: 'documents', label: 'Documents', icon: '▤' },
   { id: 'announcements', label: 'Announcements', icon: '♧' }
@@ -185,6 +205,7 @@ const adjustments = ref([])
 const documents = ref([])
 const announcements = ref([])
 const sections = ref([])
+const allAreas = ref([])
 const attendanceStatus = ref('pending')
 const registrationStatus = ref('pending')
 const documentStatus = ref('pending')
@@ -197,6 +218,9 @@ const activityForm = reactive({
 const assignmentForm = reactive({ student_id: '', area_id: '', assigned_date: '', schedule_start: '', schedule_end: '' })
 const adjustmentForm = reactive({ student_id: '', adjustment_type: 'add', adjustment_amount: '', reason: '' })
 const announcementForm = reactive({ id: '', title: '', content: '', target_section_id: '' })
+const areaForm = reactive({ id: '', area_name: '', location: '', description: '', status: 'active' })
+// The API only accepts approved students for assignments.
+const assignableStudents = computed(() => students.value.filter(student => student.account_status === 'approved'))
 
 async function request(path, options = {}) {
   const headers = new Headers(options.headers || {})
@@ -246,6 +270,7 @@ async function loadTab() {
   try {
     if (activeTab.value === 'attendance') await loadAttendance()
     else if (activeTab.value === 'activities') await Promise.all([loadActivities(), loadRegistrations(), loadAreas()])
+    else if (activeTab.value === 'areas') await loadAllAreas()
     else if (activeTab.value === 'assignments') await Promise.all([loadAssignments(), loadStudents(), loadAreas()])
     else if (activeTab.value === 'hours') {
       await loadStudents()
@@ -288,6 +313,40 @@ async function reviewAttendance(record, decision) {
 
 async function loadAreas() {
   areas.value = (await request('/admin/activity-areas')).areas
+}
+
+async function loadAllAreas() {
+  allAreas.value = (await request('/admin/service-areas')).areas
+}
+
+function resetAreaForm() {
+  Object.assign(areaForm, { id: '', area_name: '', location: '', description: '', status: 'active' })
+}
+
+function editArea(area) {
+  Object.assign(areaForm, {
+    id: area.id,
+    area_name: area.area_name,
+    location: area.location || '',
+    description: area.description || '',
+    status: area.status === 'inactive' ? 'inactive' : 'active'
+  })
+  window.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
+async function saveArea() {
+  saving.value = true
+  errorMessage.value = ''
+  try {
+    const { id, ...fields } = areaForm
+    const path = id ? `/admin/service-areas/${encodeURIComponent(id)}` : '/admin/service-areas'
+    const result = await request(path, { method: id ? 'PATCH' : 'POST', body: JSON.stringify(fields) })
+    successMessage.value = result.message
+    resetAreaForm()
+    await loadAllAreas()
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : 'Service area could not be saved.'
+  } finally { saving.value = false }
 }
 
 async function loadActivities() {
@@ -533,15 +592,14 @@ async function deleteAnnouncement(announcement) {
 
 function dateLabel(value) {
   if (!value) return '—'
-  const text = String(value)
-  const date = /^\d{4}-\d{2}-\d{2}$/.test(text) ? new Date(`${text}T00:00:00`) : new Date(text)
-  return Number.isNaN(date.getTime()) ? text : new Intl.DateTimeFormat('en-PH', { dateStyle: 'medium' }).format(date)
+  const date = parseApiDate(value)
+  return date ? new Intl.DateTimeFormat('en-PH', { dateStyle: 'medium' }).format(date) : String(value)
 }
 
 function dateTime(value) {
   if (!value) return '—'
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat('en-PH', { dateStyle: 'medium', timeStyle: 'short' }).format(date)
+  const date = parseApiDate(value)
+  return date ? new Intl.DateTimeFormat('en-PH', { dateStyle: 'medium', timeStyle: 'short' }).format(date) : String(value)
 }
 
 function titleCase(value) {
@@ -637,6 +695,8 @@ td { padding: 10px 9px; border-top: 1px solid #edf0f5; color: #526177; font-size
 .status-approved { background: #e8f8ef; color: #18764d; }
 .status-rejected { background: #ffeded; color: #b34141; }
 .status-cancelled { background: #eef1f5; color: #677386; }
+.status-active { background: #e8f8ef; color: #18764d; }
+.status-inactive { background: #eef1f5; color: #677386; }
 .empty { padding: 25px; color: #8994a4; text-align: center; }
 .note { margin: 10px 0 0; color: #8792a4; font-size: 9px; line-height: 1.5; }
 .notice { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin: 0 0 12px; padding: 10px 12px; border-radius: 7px; font-size: 10px; }

@@ -11,6 +11,7 @@ const {
   resolveDocumentPath,
   getDocumentMimeType
 } = require('../document-storage')
+const { todayInAppZone, nowInAppZone } = require('../app-time')
 
 const router = express.Router()
 const requiredHours = 340
@@ -264,11 +265,11 @@ router.get('/dashboard', async (req, res) => {
             FROM service_assignments a
             JOIN service_areas s ON s.id = a.area_id
             WHERE a.student_id = ?
-              AND date(a.assigned_date) >= date('now')
+              AND date(a.assigned_date) >= ?
             ORDER BY a.assigned_date, a.schedule_start
             LIMIT 5
           `,
-          args: [studentId]
+          args: [studentId, todayInAppZone()]
         }),
         db.execute({
           sql: `
@@ -339,9 +340,9 @@ router.get('/activities', async (req, res) => {
 
   const conditions = [
     "(a.status = 'published' OR r.id IS NOT NULL)",
-    "(date(a.scheduled_end) >= date('now') OR r.id IS NOT NULL)"
+    '(date(a.scheduled_end) >= ? OR r.id IS NOT NULL)'
   ]
-  const args = [req.student.id, req.student.id]
+  const args = [req.student.id, req.student.id, todayInAppZone()]
   if (search) {
     conditions.push('(a.title LIKE ? OR a.description LIKE ? OR a.location LIKE ? OR s.area_name LIKE ?)')
     args.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`)
@@ -408,9 +409,9 @@ router.post('/activities/:id/register', async (req, res) => {
         WHERE id = ?
           AND status = 'published'
           AND registration_open = 1
-          AND datetime(scheduled_start) > datetime('now')
+          AND datetime(scheduled_start) > datetime(?)
       `,
-      args: [activityId]
+      args: [activityId, nowInAppZone()]
     })
 
     if (activity.rows.length === 0) {
@@ -633,7 +634,7 @@ router.post('/attendance', async (req, res) => {
       message: 'Attendance date must be a valid YYYY-MM-DD date.'
     })
   }
-  if (attendanceDate > new Date().toISOString().slice(0, 10)) {
+  if (attendanceDate > todayInAppZone()) {
     return res.status(400).json({
       success: false,
       message: 'Future attendance dates are not allowed.'
@@ -688,8 +689,13 @@ router.post('/attendance', async (req, res) => {
       }
     }
 
+    // A rejected record doesn't block submitting a corrected one for the same date.
     const existing = await transaction.execute({
-      sql: 'SELECT id FROM attendance WHERE student_id = ? AND attendance_date = ? LIMIT 1',
+      sql: `
+        SELECT id FROM attendance
+        WHERE student_id = ? AND attendance_date = ? AND status <> 'rejected'
+        LIMIT 1
+      `,
       args: [req.student.id, attendanceDate]
     })
 
@@ -698,7 +704,7 @@ router.post('/attendance', async (req, res) => {
       transaction = null
       return res.status(409).json({
         success: false,
-        message: 'An attendance record has already been submitted for this date.'
+        message: 'You already have a pending or approved attendance record for this date.'
       })
     }
 
@@ -1332,10 +1338,12 @@ router.patch('/profile', async (req, res) => {
     })
   }
 
+  // Registration doesn't collect a contact number, so it must stay optional here.
+  const optionalFields = new Set(['middle_name', 'contact_number'])
   const values = {}
   for (const field of fields) {
     const value = body[field]
-    if (field === 'middle_name' && (value === null || value === '')) {
+    if (optionalFields.has(field) && (value === null || (typeof value === 'string' && !value.trim()))) {
       values[field] = null
       continue
     }

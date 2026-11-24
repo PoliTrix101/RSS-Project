@@ -45,6 +45,10 @@
           <span>✦</span> Service Activities
         </a>
 
+        <a href="/admin/workflows/areas" class="nav-item" @click.prevent="goToWorkflow('areas')">
+          <span>⌖</span> Service Areas
+        </a>
+
         <a href="/admin/workflows/documents" class="nav-item" @click.prevent="goToWorkflow('documents')">
           <span>▤</span> Documents
         </a>
@@ -324,6 +328,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { parseApiDate } from '@/utils/dates'
 
 const router = useRouter()
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api'
@@ -367,8 +372,8 @@ function formatNumber(value) {
 
 function formatDate(value) {
   if (!value) return '—'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return String(value)
+  const date = parseApiDate(value)
+  if (!date) return String(value)
   return new Intl.DateTimeFormat('en-PH', { year: 'numeric', month: 'short', day: 'numeric' }).format(date)
 }
 
