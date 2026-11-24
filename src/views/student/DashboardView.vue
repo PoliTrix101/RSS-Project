@@ -235,7 +235,7 @@
                 {{ saving ? 'Submitting…' : 'Submit for review' }}
               </button>
             </div>
-            <p class="form-note">Only approved attendance counts toward your hours. Activity attendance needs a before and after photo. You can have one pending or approved record per date; a rejected date can be submitted again.</p>
+            <p class="form-note">Only approved attendance counts toward your hours. Activity attendance needs a before and after photo. You can log more than one record on the same date as long as the times don't overlap; a rejected record can be submitted again.</p>
           </form>
         </section>
 

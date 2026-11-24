@@ -739,22 +739,34 @@ router.post('/attendance', handleAttendancePhotos, async (req, res) => {
       }
     }
 
-    // A rejected record doesn't block submitting a corrected one for the same date.
-    const existing = await transaction.execute({
+    // A student can log several records on one date (general service in the morning,
+    // an activity at night) as long as their times don't overlap, so no hour is counted
+    // twice. HH:MM strings compare in time order. A rejected record never blocks.
+    const overlapping = await transaction.execute({
       sql: `
-        SELECT id FROM attendance
-        WHERE student_id = ? AND attendance_date = ? AND status <> 'rejected'
+        SELECT t.time_in, t.time_out, s.title AS activity_title
+        FROM attendance t
+        LEFT JOIN service_activities s ON s.id = t.activity_id
+        WHERE t.student_id = ?
+          AND t.attendance_date = ?
+          AND t.status <> 'rejected'
+          AND t.time_in < ?
+          AND COALESCE(t.time_out, '24:00') > ?
+        ORDER BY t.time_in
         LIMIT 1
       `,
-      args: [req.student.id, attendanceDate]
+      args: [req.student.id, attendanceDate, timeOut, timeIn]
     })
 
-    if (existing.rows.length > 0) {
+    if (overlapping.rows.length > 0) {
+      const clash = overlapping.rows[0]
       await transaction.rollback()
       transaction = null
+      const range = clash.time_out ? `${clash.time_in}–${clash.time_out}` : `from ${clash.time_in}`
       return res.status(409).json({
         success: false,
-        message: 'You already have a pending or approved attendance record for this date.'
+        message: `This time overlaps your ${clash.activity_title || 'general service'} record ` +
+          `(${range}) on ${attendanceDate}. Use a time range that doesn't overlap.`
       })
     }
 
