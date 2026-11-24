@@ -19,6 +19,13 @@ const {
   photoFile,
   sendAttendancePhoto
 } = require('../attendance-photos')
+const {
+  handleProfilePhotoUpload,
+  isMissingProfilePhotoColumn,
+  keepUploadedProfilePhoto,
+  removeStoredProfilePhoto,
+  sendProfilePhoto
+} = require('../profile-photos')
 
 const router = express.Router()
 const requiredHours = 340
@@ -1395,6 +1402,128 @@ router.get('/profile', async (req, res) => {
       success: false,
       message: 'Failed to load student profile.'
     })
+  }
+})
+
+// Profile picture. These are the only queries that use users.profile_photo_path, so the
+// rest of the student API keeps working on a database that hasn't run migration 006 yet.
+const profilePhotoUnavailable = 'Profile pictures are not available yet. Please try again later.'
+
+// 200 with the image, or 204 when the student has no picture (the page shows initials).
+router.get('/profile/photo', async (req, res) => {
+  try {
+    const result = await db.execute({
+      sql: "SELECT profile_photo_path FROM users WHERE id = ? AND role = 'student'",
+      args: [req.student.id]
+    })
+    const fileName = result.rows[0]?.profile_photo_path
+    if (!fileName) return res.status(204).end()
+    return await sendProfilePhoto(res, fileName)
+  } catch (error) {
+    if (isMissingProfilePhotoColumn(error)) return res.status(204).end()
+    console.error('Student profile photo error:', error)
+    return res.status(500).json({ success: false, message: 'Failed to load the profile picture.' })
+  }
+})
+
+// Multipart upload with the image in the "photo" field. Replaces any earlier picture.
+router.post('/profile/photo', handleProfilePhotoUpload, async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ success: false, message: 'Choose a picture to upload.' })
+  }
+
+  try {
+    if (!(await hasImageSignature(req.file))) {
+      return res.status(400).json({
+        success: false,
+        message: 'The file is not a valid JPEG, PNG, or WebP image.'
+      })
+    }
+  } catch (error) {
+    console.error('Profile photo check error:', error)
+    return res.status(500).json({ success: false, message: 'The uploaded picture could not be checked.' })
+  }
+
+  let transaction
+  try {
+    transaction = await db.transaction('write')
+    const current = await transaction.execute({
+      sql: "SELECT profile_photo_path FROM users WHERE id = ? AND role = 'student' AND account_status = 'approved'",
+      args: [req.student.id]
+    })
+    if (current.rows.length === 0) {
+      await transaction.rollback()
+      transaction = null
+      return res.status(404).json({ success: false, message: 'Student profile was not found.' })
+    }
+
+    await transaction.execute({
+      sql: 'UPDATE users SET profile_photo_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      args: [req.file.filename, req.student.id]
+    })
+    await transaction.commit()
+    transaction = null
+    keepUploadedProfilePhoto(res)
+
+    await removeStoredProfilePhoto(current.rows[0].profile_photo_path)
+    return res.json({ success: true, message: 'Profile picture updated.' })
+  } catch (error) {
+    if (transaction) {
+      try {
+        await transaction.rollback()
+      } catch (rollbackError) {
+        console.error('Failed to roll back profile photo update:', rollbackError)
+      }
+    }
+    if (isMissingProfilePhotoColumn(error)) {
+      console.error('users.profile_photo_path is missing. Run migration 006 (npm run db:migrate).')
+      return res.status(503).json({ success: false, message: profilePhotoUnavailable })
+    }
+    console.error('Student profile photo upload error:', error)
+    return res.status(500).json({ success: false, message: 'Failed to save the profile picture.' })
+  }
+})
+
+router.delete('/profile/photo', async (req, res) => {
+  let transaction
+  try {
+    transaction = await db.transaction('write')
+    const current = await transaction.execute({
+      sql: "SELECT profile_photo_path FROM users WHERE id = ? AND role = 'student' AND account_status = 'approved'",
+      args: [req.student.id]
+    })
+    if (current.rows.length === 0) {
+      await transaction.rollback()
+      transaction = null
+      return res.status(404).json({ success: false, message: 'Student profile was not found.' })
+    }
+
+    const previous = current.rows[0].profile_photo_path
+    if (previous) {
+      await transaction.execute({
+        sql: 'UPDATE users SET profile_photo_path = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        args: [req.student.id]
+      })
+    }
+    await transaction.commit()
+    transaction = null
+
+    await removeStoredProfilePhoto(previous)
+    return res.json({ success: true, message: 'Profile picture removed.' })
+  } catch (error) {
+    if (transaction) {
+      try {
+        await transaction.rollback()
+      } catch (rollbackError) {
+        console.error('Failed to roll back profile photo removal:', rollbackError)
+      }
+    }
+    if (isMissingProfilePhotoColumn(error)) {
+      console.error('users.profile_photo_path is missing. Run migration 006 (npm run db:migrate).')
+      return res.status(503).json({ success: false, message: profilePhotoUnavailable })
+    }
+    console.error('Student profile photo removal error:', error)
+    return res.status(500).json({ success: false, message: 'Failed to remove the profile picture.' })
   }
 })
 

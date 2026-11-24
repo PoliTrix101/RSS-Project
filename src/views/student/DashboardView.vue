@@ -9,6 +9,7 @@
     user-role="Student"
     :user-meta="studentNumber || 'Student'"
     :user-initials="initials"
+    :user-photo="profilePhotoUrl"
     @navigate="selectModule"
   >
     <template #actions>
@@ -663,7 +664,33 @@
         <div v-if="profile" class="profile-layout">
           <section class="card profile-summary">
             <div class="card-body">
-              <span class="avatar avatar-lg">{{ initials }}</span>
+              <div class="profile-photo" :aria-busy="photoBusy">
+                <span class="avatar profile-avatar">
+                  <img v-if="profilePhotoUrl" :src="profilePhotoUrl" alt="Your profile picture">
+                  <template v-else>{{ initials }}</template>
+                </span>
+                <span v-if="photoBusy" class="profile-photo-busy" role="status" aria-label="Saving picture">
+                  <span class="spinner spinner-sm"></span>
+                </span>
+              </div>
+              <div class="profile-photo-actions">
+                <button class="btn btn-secondary btn-sm" type="button" :disabled="photoBusy" @click="chooseProfilePhoto">
+                  <AppIcon name="camera" :size="15" /> {{ profilePhotoUrl ? 'Change picture' : 'Upload picture' }}
+                </button>
+                <button v-if="profilePhotoUrl" class="btn btn-ghost btn-sm" type="button" :disabled="photoBusy" @click="removeProfilePhoto">
+                  <AppIcon name="trash" :size="15" /> Remove
+                </button>
+              </div>
+              <span class="field-hint">JPEG, PNG or WebP, up to 5 MB</span>
+              <input
+                ref="profilePhotoInput"
+                class="sr-only"
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
+                tabindex="-1"
+                aria-label="Choose a profile picture"
+                @change="onProfilePhotoChange"
+              >
               <h3>{{ displayName }}</h3>
               <p>{{ profile.email }}</p>
               <span :class="badgeClass(profile.account_status)">{{ titleCase(profile.account_status) }}</span>
@@ -751,7 +778,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
 import AppShell from '@/components/AppShell.vue'
@@ -763,12 +790,15 @@ import { localDateString, parseApiDate } from '@/utils/dates'
 import {
   badgeClass, dateParts, formatDate, formatHours, formatSchedule, formatTimeRange, timeAgo, titleCase
 } from '@/utils/format'
+import { preparePhoto } from '@/utils/photos'
 import { clearSession, fullName, initialsOf, readSession } from '@/utils/session'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api'
 const RING_LENGTH = 2 * Math.PI * 52
 const MAX_DOCUMENT_BYTES = 5 * 1024 * 1024
 const ACCEPTED_DOCUMENT_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp']
+const PROFILE_PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp']
+const MAX_PROFILE_PHOTO_BYTES = 5 * 1024 * 1024
 
 const router = useRouter()
 const route = useRoute()
@@ -808,6 +838,11 @@ const announcements = ref([])
 const notifications = ref([])
 const unreadCount = ref(0)
 const profile = ref(null)
+// Object URL of the student's own picture, shown on My Profile and in the header.
+const profilePhotoUrl = ref('')
+const photoBusy = ref(false)
+const profilePhotoInput = ref(null)
+let profilePhotoRequest = 0
 const activitySearchInput = ref('')
 const announcementSearch = ref('')
 const notificationFilter = ref('')
@@ -1362,6 +1397,80 @@ function resetProfileForm() {
   setProfileForm(profile.value)
 }
 
+function setProfilePhoto(blob) {
+  profilePhotoRequest++
+  if (profilePhotoUrl.value) URL.revokeObjectURL(profilePhotoUrl.value)
+  profilePhotoUrl.value = blob ? URL.createObjectURL(blob) : ''
+}
+
+// The picture is only served with the session token, so it is fetched and shown from an
+// object URL. 204 means the student has no picture; any failure leaves the initials.
+async function loadProfilePhoto() {
+  const requestId = ++profilePhotoRequest
+  try {
+    const response = await fetch(`${API_URL}/student/profile/photo`, {
+      headers: { Authorization: `Bearer ${token.value}` }
+    })
+    const isImage = response.status === 200 && (response.headers.get('content-type') || '').startsWith('image/')
+    const blob = isImage ? await response.blob() : null
+    // Skip the result if an upload or removal finished while this was loading.
+    if (requestId === profilePhotoRequest) setProfilePhoto(blob)
+  } catch {
+    // Network problem: keep what is shown now.
+  }
+}
+
+function chooseProfilePhoto() {
+  profilePhotoInput.value?.click()
+}
+
+async function onProfilePhotoChange(event) {
+  const picked = event.target.files?.[0]
+  event.target.value = ''
+  if (!picked) return
+  photoBusy.value = true
+  try {
+    // Phone photos are scaled down first; a profile picture never needs more than 640 px.
+    const file = await preparePhoto(picked, 'profile-photo', { maxEdge: 640 })
+    if (!PROFILE_PHOTO_TYPES.includes(file.type)) {
+      throw new Error('Please choose a JPEG, PNG, or WebP image.')
+    }
+    if (file.size > MAX_PROFILE_PHOTO_BYTES) {
+      throw new Error('The picture must be 5 MB or smaller.')
+    }
+    const body = new FormData()
+    body.append('photo', file)
+    const result = await request('/student/profile/photo', { method: 'POST', body })
+    setProfilePhoto(file)
+    toast.success(result.message)
+  } catch (error) {
+    toast.error(errorText(error, 'The picture could not be uploaded.'))
+  } finally {
+    photoBusy.value = false
+  }
+}
+
+async function removeProfilePhoto() {
+  const { confirmed } = await confirm({
+    title: 'Remove profile picture?',
+    message: 'Your initials will show instead. You can upload a new picture at any time.',
+    confirmLabel: 'Remove picture',
+    cancelLabel: 'Keep it',
+    tone: 'danger'
+  })
+  if (!confirmed) return
+  photoBusy.value = true
+  try {
+    const result = await request('/student/profile/photo', { method: 'DELETE' })
+    setProfilePhoto(null)
+    toast.success(result.message)
+  } catch (error) {
+    toast.error(errorText(error, 'The picture could not be removed.'))
+  } finally {
+    photoBusy.value = false
+  }
+}
+
 async function changePassword() {
   if (passwordMismatch.value) return
   saving.value = true
@@ -1395,8 +1504,13 @@ watch(activeModule, module => {
 onMounted(() => {
   if (!getSession()) return
   loadModule(activeModule.value)
+  loadProfilePhoto()
   // The name, unread count and student ID in the shell come from the dashboard summary.
   if (activeModule.value !== 'dashboard') loadSummary().catch(() => {})
+})
+
+onBeforeUnmount(() => {
+  if (profilePhotoUrl.value) URL.revokeObjectURL(profilePhotoUrl.value)
 })
 </script>
 
@@ -1585,6 +1699,11 @@ onMounted(() => {
 .profile-summary .card-body { display: flex; flex-direction: column; align-items: center; text-align: center; }
 .profile-summary h3 { margin: 14px 0 2px; color: var(--text); font-size: 18px; font-weight: 700; }
 .profile-summary .card-body > p { margin: 0 0 12px; color: var(--text-3); font-size: 14px; overflow-wrap: anywhere; }
+.profile-photo { position: relative; }
+.profile-avatar { width: 96px; height: 96px; font-size: 32px; box-shadow: 0 0 0 4px var(--surface), 0 0 0 5px var(--border); }
+.profile-photo-busy { position: absolute; inset: 0; display: grid; place-items: center; border-radius: 50%; background: rgba(255, 255, 255, 0.72); }
+.profile-photo-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-top: 16px; }
+.profile-summary .field-hint { margin-top: 6px; }
 .profile-facts { margin: 0; padding: 4px 20px 12px; border-top: 1px solid var(--border); }
 .profile-facts div { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
 .profile-facts div:last-child { border-bottom: 0; }

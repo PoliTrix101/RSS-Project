@@ -8,16 +8,17 @@ const SERVER_TYPES = ['image/jpeg', 'image/png', 'image/webp']
 // Slow phones can take a few seconds on a large photo; past this, upload the original.
 const TIMEOUT_MS = 15000
 
-export async function preparePhoto(file, baseName = 'photo') {
+// `maxEdge` lets callers that show small images (like profile pictures) shrink further.
+export async function preparePhoto(file, baseName = 'photo', { maxEdge = MAX_EDGE } = {}) {
   if (!file) return null
   const fallback = new Promise(resolve => setTimeout(() => resolve(file), TIMEOUT_MS))
-  return Promise.race([shrink(file, baseName), fallback])
+  return Promise.race([shrink(file, baseName, maxEdge), fallback])
 }
 
-async function shrink(file, baseName) {
+async function shrink(file, baseName, maxEdge) {
   try {
     const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' })
-    const scale = Math.min(1, MAX_EDGE / Math.max(bitmap.width, bitmap.height))
+    const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height))
     const canvas = document.createElement('canvas')
     canvas.width = Math.max(1, Math.round(bitmap.width * scale))
     canvas.height = Math.max(1, Math.round(bitmap.height * scale))

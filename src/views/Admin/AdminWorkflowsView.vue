@@ -41,7 +41,7 @@
                 <tr v-for="record in attendance" :key="record.id">
                   <td>
                     <div class="person">
-                      <span class="avatar avatar-sm">{{ initialsOf(record.student_name) }}</span>
+                      <StudentAvatar class="avatar-sm" :name="record.student_name" :photo-url="record.profile_photo_url" />
                       <div><span class="cell-strong">{{ record.student_name }}</span><span class="cell-sub">{{ record.student_number || '—' }}</span></div>
                     </div>
                   </td>
@@ -454,7 +454,7 @@
                 <tr v-for="registration in registrations" :key="registration.id">
                   <td>
                     <div class="person">
-                      <span class="avatar avatar-sm">{{ initialsOf(registration.student_name) }}</span>
+                      <StudentAvatar class="avatar-sm" :name="registration.student_name" :photo-url="registration.profile_photo_url" />
                       <div><span class="cell-strong">{{ registration.student_name }}</span><span class="cell-sub">{{ registration.student_number || '—' }}</span></div>
                     </div>
                   </td>
@@ -605,7 +605,7 @@
             <tr v-for="participant in participants.rows" :key="participant.student_id">
               <td>
                 <div class="person">
-                  <span class="avatar avatar-sm">{{ initialsOf(participant.student_name) }}</span>
+                  <StudentAvatar class="avatar-sm" :name="participant.student_name" :photo-url="participant.profile_photo_url" />
                   <div><span class="cell-strong">{{ participant.student_name }}</span><span class="cell-sub">{{ participant.student_number || '—' }}</span></div>
                 </div>
               </td>
@@ -649,7 +649,7 @@
               <tr v-for="record in serviceDay.day.records" :key="record.id">
                 <td>
                   <div class="person">
-                    <span class="avatar avatar-sm">{{ initialsOf(record.student_name) }}</span>
+                    <StudentAvatar class="avatar-sm" :name="record.student_name" :photo-url="record.profile_photo_url" />
                     <div><span class="cell-strong">{{ record.student_name }}</span><span class="cell-sub">{{ record.student_number || '—' }}</span></div>
                   </div>
                 </td>
@@ -751,11 +751,12 @@ import AdminLayout from '@/components/AdminLayout.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import AppModal from '@/components/AppModal.vue'
 import AuthPhoto from '@/components/AuthPhoto.vue'
+import StudentAvatar from '@/components/StudentAvatar.vue'
 import { confirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { parseApiDate } from '@/utils/dates'
 import { badgeClass, dateParts, formatSchedule, formatTimeRange, timeAgo, titleCase } from '@/utils/format'
-import { initialsOf, readSession } from '@/utils/session'
+import { readSession } from '@/utils/session'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api'
 const route = useRoute()

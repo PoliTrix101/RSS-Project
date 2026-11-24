@@ -7,10 +7,17 @@ const db = require('../db')
 const { resolveDocumentPath, getDocumentMimeType } = require('../document-storage')
 const { nowInAppZone } = require('../app-time')
 const { PHOTO_KINDS, sendAttendancePhoto } = require('../attendance-photos')
+const { sendProfilePhoto } = require('../profile-photos')
 
 const router = express.Router()
 const requiredHours = 340
 const accountStatuses = new Set(['pending', 'approved', 'rejected', 'disabled'])
+
+// Select column with the path the admin pages load a student's profile picture from, or
+// NULL when there is none. `v` changes with every upload, so browsers may cache each URL.
+function profilePhotoUrlColumn(alias) {
+  return `CASE WHEN ${alias}.profile_photo_path IS NULL THEN NULL ELSE '/admin/students/' || ${alias}.id || '/photo?v=' || substr(${alias}.profile_photo_path, 1, 8) END AS profile_photo_url`
+}
 
 async function authenticateAdmin(req, res, next) {
   const authorization = req.get('authorization')
@@ -351,6 +358,7 @@ router.get('/dashboard-stats', async (req, res) => {
           u.id,
           u.student_id,
           TRIM(u.first_name || ' ' || COALESCE(u.middle_name || ' ', '') || u.last_name) AS full_name,
+          ${profilePhotoUrlColumn('u')},
           u.course,
           u.year_level,
           u.account_status,
@@ -367,6 +375,7 @@ router.get('/dashboard-stats', async (req, res) => {
           a.id,
           u.student_id,
           TRIM(u.first_name || ' ' || COALESCE(u.middle_name || ' ', '') || u.last_name) AS student_name,
+          ${profilePhotoUrlColumn('u')},
           a.attendance_date,
           a.time_in,
           a.time_out,
@@ -529,6 +538,7 @@ router.get('/students', async (req, res) => {
             u.middle_name,
             u.last_name,
             TRIM(u.first_name || ' ' || COALESCE(u.middle_name || ' ', '') || u.last_name) AS full_name,
+            ${profilePhotoUrlColumn('u')},
             u.email,
             u.course,
             u.year_level,
@@ -581,6 +591,7 @@ router.get('/students/:id', async (req, res) => {
           u.middle_name,
           u.last_name,
           TRIM(u.first_name || ' ' || COALESCE(u.middle_name || ' ', '') || u.last_name) AS full_name,
+          ${profilePhotoUrlColumn('u')},
           u.email,
           u.contact_number,
           u.course,
@@ -646,6 +657,28 @@ router.get('/students/:id', async (req, res) => {
       success: false,
       message: 'Failed to load student details.'
     })
+  }
+})
+
+// The student's profile picture: 200 with the image, or 204 when they have none.
+router.get('/students/:id/photo', async (req, res) => {
+  const studentId = validateStudentId(req.params.id, res)
+  if (!studentId) return
+
+  try {
+    const result = await db.execute({
+      sql: "SELECT profile_photo_path FROM users WHERE id = ? AND role = 'student'",
+      args: [studentId]
+    })
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Student account was not found.' })
+    }
+    const fileName = result.rows[0].profile_photo_path
+    if (!fileName) return res.status(204).end()
+    return await sendProfilePhoto(res, fileName, { maxAgeSeconds: 24 * 60 * 60 })
+  } catch (error) {
+    console.error('Admin student photo error:', error)
+    return res.status(500).json({ success: false, message: 'Failed to load the profile picture.' })
   }
 })
 
@@ -774,6 +807,7 @@ router.get('/attendance', async (req, res) => {
           a.student_id,
           u.student_id AS student_number,
           TRIM(u.first_name || ' ' || COALESCE(u.middle_name || ' ', '') || u.last_name) AS student_name,
+          ${profilePhotoUrlColumn('u')},
           a.attendance_date,
           a.time_in,
           a.time_out,
@@ -1589,6 +1623,7 @@ router.get('/activities/:id/participants', async (req, res) => {
           u.id AS student_id,
           u.student_id AS student_number,
           TRIM(u.first_name || ' ' || COALESCE(u.middle_name || ' ', '') || u.last_name) AS student_name,
+          ${profilePhotoUrlColumn('u')},
           r.status AS registration_status,
           r.registered_at,
           COALESCE(h.approved_hours, 0) AS approved_hours,
@@ -1643,6 +1678,7 @@ router.get('/activity-registrations', async (req, res) => {
           r.student_id,
           u.student_id AS student_number,
           TRIM(u.first_name || ' ' || COALESCE(u.middle_name || ' ', '') || u.last_name) AS student_name,
+          ${profilePhotoUrlColumn('u')},
           r.activity_id,
           a.title AS activity_title,
           r.status,

@@ -83,7 +83,7 @@
                 <tr v-for="student in recentRegistrations" :key="student.id">
                   <td>
                     <div class="person">
-                      <span class="avatar avatar-sm">{{ initialsOf(student.full_name) }}</span>
+                      <StudentAvatar class="avatar-sm" :name="student.full_name" :photo-url="student.profile_photo_url" />
                       <div><span class="cell-strong truncate">{{ student.full_name }}</span><span class="cell-sub">{{ student.student_id || '—' }}</span></div>
                     </div>
                   </td>
@@ -115,7 +115,7 @@
                 <tr v-for="record in pendingAttendance" :key="record.id">
                   <td>
                     <div class="person">
-                      <span class="avatar avatar-sm">{{ initialsOf(record.student_name) }}</span>
+                      <StudentAvatar class="avatar-sm" :name="record.student_name" :photo-url="record.profile_photo_url" />
                       <div><span class="cell-strong truncate">{{ record.student_name }}</span><span class="cell-sub">{{ record.student_id || '—' }}</span></div>
                     </div>
                   </td>
@@ -197,10 +197,11 @@ import { computed, defineComponent, h, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import AdminLayout from '@/components/AdminLayout.vue'
 import AppIcon from '@/components/AppIcon.vue'
+import StudentAvatar from '@/components/StudentAvatar.vue'
 import {
   badgeClass, formatDate, formatDateTime, formatNumber, formatTimeRange, timeAgo, titleCase
 } from '@/utils/format'
-import { initialsOf, readSession } from '@/utils/session'
+import { readSession } from '@/utils/session'
 
 const router = useRouter()
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api'

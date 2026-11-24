@@ -95,7 +95,7 @@
               <tr v-for="student in students" :key="student.id">
                 <td>
                   <button class="person person-button" type="button" @click="openDetails(student)">
-                    <span class="avatar">{{ initialsOf(student.full_name) }}</span>
+                    <StudentAvatar :name="student.full_name" :photo-url="student.profile_photo_url" />
                     <div>
                       <span class="cell-strong">{{ student.full_name }}</span>
                       <span class="cell-sub">{{ student.email }}</span>
@@ -165,6 +165,12 @@
         <div class="alert-body">{{ detailsError }}</div>
       </div>
       <template v-else-if="details">
+        <StudentAvatar
+          v-if="details.student.profile_photo_url"
+          class="details-avatar"
+          :name="details.student.full_name"
+          :photo-url="details.student.profile_photo_url"
+        />
         <div class="details-top">
           <dl class="detail-list detail-grid">
             <div><dt>Status</dt><dd><span :class="badgeClass(details.student.account_status)">{{ titleCase(details.student.account_status) }}</span></dd></div>
@@ -255,7 +261,7 @@
       </template>
       <template v-else>
         <div class="action-summary">
-          <span class="avatar">{{ initialsOf(actionDialog.student?.full_name) }}</span>
+          <StudentAvatar :name="actionDialog.student?.full_name" :photo-url="actionDialog.student?.profile_photo_url" />
           <div>
             <strong>{{ actionDialog.student?.full_name }}</strong>
             <span>{{ actionDialog.student?.student_id || 'No student ID' }} · {{ actionDialog.student?.course || 'No course' }}</span>
@@ -295,9 +301,10 @@ import { useRoute, useRouter } from 'vue-router'
 import AdminLayout from '@/components/AdminLayout.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import AppModal from '@/components/AppModal.vue'
+import StudentAvatar from '@/components/StudentAvatar.vue'
 import { useToast } from '@/composables/useToast'
 import { badgeClass, formatDate, formatHours, formatTimeRange, titleCase } from '@/utils/format'
-import { initialsOf, readSession } from '@/utils/session'
+import { readSession } from '@/utils/session'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api'
 const router = useRouter()
@@ -562,6 +569,7 @@ onBeforeUnmount(() => {
 
 /* Details modal */
 .modal-state { min-height: 200px; }
+.details-avatar { width: 96px; height: 96px; margin-bottom: 18px; font-size: 32px; }
 .details-top { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 24px; align-items: start; }
 .detail-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .progress-panel { padding: 16px; border: 1px solid var(--primary-soft-2); border-radius: var(--radius); background: var(--primary-soft); }

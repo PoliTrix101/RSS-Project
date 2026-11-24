@@ -46,7 +46,10 @@
 
       <div class="sidebar-footer">
         <div class="sidebar-user">
-          <span class="avatar avatar-sm sidebar-avatar">{{ userInitials }}</span>
+          <span class="avatar avatar-sm sidebar-avatar">
+            <img v-if="userPhoto" :src="userPhoto" alt="">
+            <template v-else>{{ userInitials }}</template>
+          </span>
           <div class="sidebar-user-copy">
             <strong>{{ userName }}</strong>
             <span>{{ userRole }}</span>
@@ -79,7 +82,10 @@
         <div class="topbar-actions">
           <slot name="actions" />
           <div class="topbar-user">
-            <span class="avatar avatar-sm">{{ userInitials }}</span>
+            <span class="avatar avatar-sm">
+              <img v-if="userPhoto" :src="userPhoto" alt="">
+              <template v-else>{{ userInitials }}</template>
+            </span>
             <div>
               <strong>{{ userName }}</strong>
               <span>{{ userMeta || userRole }}</span>
@@ -115,7 +121,9 @@ defineProps({
   userName: { type: String, default: '' },
   userRole: { type: String, default: '' },
   userMeta: { type: String, default: '' },
-  userInitials: { type: String, default: '?' }
+  userInitials: { type: String, default: '?' },
+  // Image URL for the signed-in user's picture; the initials show when it is empty.
+  userPhoto: { type: String, default: '' }
 })
 const emit = defineEmits(['navigate'])
 
